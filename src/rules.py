@@ -18,6 +18,18 @@ OVERRIDE_BLOCK: list[re.Pattern[str]] = [
 
 OVERRIDES: list[tuple[re.Pattern[str], list[str]]] = [
     (
+        re.compile(r"^\s*(good\s*)?morning\b", re.I),
+        ["Morning", "Morning bong", "Mg 7"],
+    ),
+    (
+        re.compile(r"^\s*kiss(\s*kiss)?\s*[?.!]*$", re.I),
+        ["Ort Ot jg", "Tic tt", "Ort"],
+    ),
+    (
+        re.compile(r"\b(bong|oun)\s+slnh\s+(oun|bong)\b", re.I),
+        ["Oun sur bong jrern", "Slnh bong", "Kit bong"],
+    ),
+    (
         re.compile(r"^\s*(good\s*night|gn)\b", re.I),
         ["Good night bong", "Dek hz", "Good night"],
     ),

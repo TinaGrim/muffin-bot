@@ -264,6 +264,7 @@ class Config:
     fallback_min_score: float = 0.5
     direct_threshold: float = 0.0
     timeout: float = 90.0
+    max_reply_seconds: float = 15.0
     history_messages: int = 12
     max_reply_chars: int = 160
     remote_min_tokens: int = 300
@@ -397,6 +398,56 @@ def looks_english(text: str) -> bool:
     return hits >= 3 and hits / len(words) >= 0.45
 
 
+FOOD_WORDS = re.compile(
+    r"\b(nham|bay|prek|kteav|trey|saj|phat|eggs?|chicken|dinner|lunch|"
+    r"breakfast|eat|eating|food|hungry|nguy)\b",
+    re.I,
+)
+FOOD_ASK = re.compile(
+    r"\b(nham|bay|eat|eating|food|hungry|nguy|prek|kteav|trey|"
+    r"breakfast|lunch|dinner|tirk)\b",
+    re.I,
+)
+DOING_ASK = re.compile(
+    r"(pong|bong|oun)\s*tvr\s*ey|what are you doing|tvr ey|tvr ey\b", re.I
+)
+TYPO_QUESTION = re.compile(r"\bder\s+(kg|lg)\b|\bkg\s+ler\b", re.I)
+
+
+def junk_reply(text: str) -> bool:
+    """One-off noise that should never be replayed as a chat line."""
+    text = (text or "").strip()
+    if not text:
+        return True
+    if re.search(r"(.)\1{3,}", text):  # Bajjjj, nooooo
+        return True
+    if re.fullmatch(r"[\d\W_]+", text):
+        return True
+    return False
+
+
+def note_emotion(note: str) -> str:
+    lowered = (note or "").lower()
+    for word, emotion in (
+        ("angry", "angry"),
+        ("mad", "angry"),
+        ("annoyed", "annoyed"),
+        ("upset", "upset"),
+        ("sad", "sad"),
+        ("soft", "soft"),
+        ("gentle", "gentle"),
+        ("jealous", "jealous"),
+    ):
+        if word in lowered:
+            return emotion
+    return ""
+
+
+def is_neutral_reply(parts: list[str]) -> bool:
+    text = " ".join(parts).strip().lower()
+    return text in {"hmm", "hm", "ort", "ot", "okay", "ok", "mic", "no", "teh"}
+
+
 def drop_commas(text: str) -> str:
     """Remove commas from chat lines while leaving fenced code untouched."""
     if "," not in (text or ""):
@@ -480,6 +531,7 @@ class LLM:
         max_tokens: int | None = None,
         session_id: str | None = None,
         stop: list[str] | None = None,
+        timeout: float | None = None,
     ) -> str:
         payload = {
             "model": self.config.model,
@@ -498,7 +550,10 @@ class LLM:
         for attempt in range(2):
             try:
                 response = self.client.post(
-                    "/chat/completions", json=payload, headers=headers
+                    "/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout or self.config.timeout,
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -556,7 +611,12 @@ class Memory:
         if not pool:
             return None
         for reply, _ in pool.most_common(1):
-            if reply and len(reply) <= 240 and "http" not in reply.lower():
+            if (
+                reply
+                and len(reply) <= 240
+                and "http" not in reply.lower()
+                and not junk_reply(reply)
+            ):
                 return reply
         return None
 
@@ -568,6 +628,8 @@ class Memory:
         if not pool:
             return None
         for reply, _ in pool.most_common(5):
+            if junk_reply(reply):
+                continue
             return reply
         return None
 
@@ -622,7 +684,7 @@ class Memory:
         for reply, _ in pool.most_common(5):
             if "http" in reply.lower() or len(reply) > max_len:
                 continue
-            if "nheb tinarith" in reply.lower():
+            if "nheb tinarith" in reply.lower() or junk_reply(reply):
                 continue
             return reply
         return None
@@ -670,6 +732,7 @@ class Muffin:
         self.last_provider = config.model
         self.last_fallbacks: list[str] = []
         self.last_style_issues: list[str] = []
+        self._deadline = 0.0
         self.chats: dict[int, Chat] = {}
         for chat_id, messages in self.history.chats.items():
             try:
@@ -819,6 +882,10 @@ class Muffin:
         cut the reasoning before the answer starts.
         """
         for llm in self.fallbacks:
+            remaining = self._remaining()
+            if remaining <= 0.5:
+                log.warning("reply deadline reached; skipping %s", llm.config.model)
+                break
             local = (
                 "localhost" in llm.config.base_url
                 or "127.0.0.1" in llm.config.base_url
@@ -844,6 +911,7 @@ class Muffin:
                     max_tokens=tokens,
                     session_id=session_id,
                     stop=None if local else [],
+                    timeout=min(remaining, 4.0 if local else 6.0),
                 )
             except Exception as exc:  # noqa: BLE001 - try the next provider
                 log.warning("fallback %s failed: %s", llm.config.model, exc)
@@ -862,6 +930,7 @@ class Muffin:
         history: list[dict],
         rejected: str = "",
         reset_metrics: bool = True,
+        timeout: float | None = None,
     ) -> list[str]:
         """Rewrite a rejected answer so it follows Bong's note.
 
@@ -873,9 +942,25 @@ class Muffin:
             self.last_provider = self.config.model
             self.last_fallbacks = []
             self.last_style_issues = []
+        if not self._deadline:
+            self.begin_turn()
         mood = self.mood.snapshot(chat_id)
         life = self.life.observe(chat_id)
-        return self._note_reply(chat_id, text, note, rejected, mood, life, history)
+        parts = self._note_reply(
+            chat_id, text, note, rejected, mood, life, history, timeout=timeout
+        )
+        if note_emotion(note) and is_neutral_reply(parts):
+            parts = self._note_reply(
+                chat_id,
+                text,
+                note + " Show the mood clearly, not a neutral filler.",
+                rejected,
+                mood,
+                life,
+                history,
+                timeout=timeout,
+            )
+        return parts
 
     def _note_reply(
         self,
@@ -886,6 +971,7 @@ class Muffin:
         mood: Mood,
         life: Activity,
         history: list[dict],
+        timeout: float | None = None,
     ) -> list[str]:
         system = self._system_prompt(
             text, has_history=bool(history), mood=mood, life=life
@@ -898,6 +984,12 @@ class Muffin:
         )
         if rejected:
             system += f'\nDo not repeat the rejected line: "{rejected}"'
+        emotion = note_emotion(note)
+        if emotion:
+            system += (
+                f"\nBong wants you to be clearly {emotion}. Show that mood in the "
+                "line. Do not answer with Hmm, Ort, Okay or Mic."
+            )
 
         messages = [{"role": "system", "content": system}]
         messages += history
@@ -923,6 +1015,7 @@ class Muffin:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 session_id=f"muffin-{chat_id}",
+                timeout=min(timeout or self.config.timeout, self._llm_timeout()),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("note rewrite primary LLM failed: %s", exc)
@@ -953,6 +1046,19 @@ class Muffin:
 
         return split_messages(reply, text, mood.mood, generated=True)
 
+    def begin_turn(self, seconds: float | None = None) -> None:
+        self._deadline = time.monotonic() + (
+            seconds if seconds is not None else self.config.max_reply_seconds
+        )
+
+    def _remaining(self) -> float:
+        if not self._deadline:
+            return self.config.timeout
+        return max(0.0, self._deadline - time.monotonic())
+
+    def _llm_timeout(self) -> float:
+        return max(0.5, min(self.config.timeout, self._remaining()))
+
     def style_problems(self, text: str, user_text: str = "") -> list[str]:
         """What breaks her texting style for this message."""
         if KHMER_SCRIPT.search(user_text or ""):
@@ -970,6 +1076,14 @@ class Muffin:
         if not looks_english(user_text) and looks_english(plain):
             problems.append("english")
         return problems
+
+    def relevance_problems(self, user_text: str, reply: str) -> list[str]:
+        """Catch a reply that volunteers food when he asked something else."""
+        if FOOD_WORDS.search(reply) and not (
+            FOOD_ASK.search(user_text) or DOING_ASK.search(user_text)
+        ):
+            return ["food"]
+        return []
 
     def style_fix(self, parts: list[str], user_text: str = "") -> list[str]:
         fixed: list[str] = []
@@ -991,6 +1105,7 @@ class Muffin:
         if (
             remembered
             and not BANNED.search(remembered)
+            and not junk_reply(remembered)
             and not re.fullmatch(r"[\d\W_]+", remembered)
             and not self.life.conflicts(life, remembered)
         ):
@@ -1101,6 +1216,7 @@ class Muffin:
         return message
 
     def proactive(self, chat_id: int) -> list[str]:
+        self.begin_turn()
         self.last_provider = self.config.model
         self.last_fallbacks = []
         self.last_style_issues = []
@@ -1135,6 +1251,7 @@ class Muffin:
                 temperature=0.9,
                 max_tokens=max_tokens,
                 session_id=f"muffin-{chat_id}",
+                timeout=self._llm_timeout(),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("proactive primary failed: %s", exc)
@@ -1159,6 +1276,7 @@ class Muffin:
         return split_messages(reply, "", mood.mood, generated=True)[:2]
 
     def _code_reply(self, chat_id: int, text: str, life: Activity) -> list[str]:
+        self.begin_turn(30.0)
         self.last_provider = self.config.model
         self.last_fallbacks = []
         self.last_style_issues = []
@@ -1183,6 +1301,7 @@ class Muffin:
                 max_tokens=max_tokens,
                 session_id=f"muffin-{chat_id}",
                 stop=[],
+                timeout=self._llm_timeout(),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("code primary failed: %s", exc)
@@ -1266,6 +1385,7 @@ class Muffin:
         self.last_provider = "handler"
         self.last_fallbacks = []
         self.last_style_issues = []
+        self.begin_turn()
         for message in prior:
             if message.strip():
                 self.threads.observe_user(chat_id, message)
@@ -1306,6 +1426,8 @@ class Muffin:
                         "script, no commas, and no English sentences.",
                         start,
                         joined,
+                        reset_metrics=False,
+                        timeout=5.0,
                     )
                 except Exception as exc:  # noqa: BLE001 - fix what we can
                     log.warning("style rewrite failed: %s", exc)
@@ -1315,6 +1437,33 @@ class Muffin:
                     self.apply_correction(chat_id, "\n".join(parts))
                 else:
                     parts = fixed
+
+        joined = "\n".join(parts)
+        relevance = self.relevance_problems(text, joined)
+        if relevance:
+            self.last_style_issues.extend(relevance)
+            log.info("relevance issue %s: %r", relevance, joined[:120])
+            try:
+                rewritten = self.rewrite_with_note(
+                    chat_id,
+                    text,
+                    "Answer only what he asked. Do not mention food, eating, or "
+                    "what you are doing.",
+                    start,
+                    joined,
+                    reset_metrics=False,
+                    timeout=5.0,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep the reply
+                log.warning("relevance rewrite failed: %s", exc)
+                rewritten = []
+            if rewritten and not self.relevance_problems(
+                text, "\n".join(rewritten)
+            ):
+                parts = rewritten
+                self.apply_correction(chat_id, "\n".join(parts))
+            else:
+                parts = self.style_fix(parts, text)
         self.threads.observe_reply(chat_id, text, "\n".join(parts))
         return parts
 
@@ -1376,6 +1525,15 @@ class Muffin:
         # Once the conversation is running, context must beat archive replay:
         # a line copied from an unrelated chat is what makes replies feel random.
         ongoing = bool(chat.history)
+
+        # Typo-like pairs ("der kg" for "der lg") are not safe to guess.
+        if TYPO_QUESTION.search(text):
+            reply = "Mean ey bong?"
+            log.info("typo-like message %r -> ask", text)
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
+
 
         # "Tv sala kal?" = what time do you go to school? Her real schedule
         # starts at 07:00, so do not let the model guess "Okay".
@@ -1644,6 +1802,7 @@ class Muffin:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 session_id=f"muffin-{chat_id}",
+                timeout=self._llm_timeout(),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("primary LLM failed: %s", exc)
@@ -1709,6 +1868,7 @@ def load_config(env: dict[str, str], persona_path: Path) -> Config:
         fallback_min_score=float(env.get("FALLBACK_MIN_SCORE", 0.5)),
         direct_threshold=float(env.get("DIRECT_REPLY_THRESHOLD", 0)),
         timeout=float(env.get("LLM_TIMEOUT", 90)),
+        max_reply_seconds=float(env.get("MAX_REPLY_SECONDS", 15)),
         history_messages=int(env.get("HISTORY_MESSAGES", 12)),
         max_reply_chars=int(env.get("MAX_REPLY_CHARS", 160)),
         remote_min_tokens=int(env.get("REMOTE_MIN_TOKENS", 300)),

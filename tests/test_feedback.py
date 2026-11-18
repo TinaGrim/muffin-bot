@@ -399,3 +399,23 @@ def test_metrics_summary(tmp_path):
     assert abs(summary["fallback_rate"] - 0.2) < 1e-9
     assert summary["style_fixes"] == 1
     assert summary["providers"]["primary"] == 4
+
+
+def test_relevance_junk_and_emotion_guards(tmp_path, retriever):
+    from muffin import is_neutral_reply, junk_reply, note_emotion
+
+    muffin = make_muffin(tmp_path, retriever)
+    assert junk_reply("Bajjjj")
+    assert not junk_reply("Bart")
+    assert muffin.relevance_problems("Kiss kiss?", "Ort / Nham bay sin") == ["food"]
+    assert muffin.relevance_problems("Nham bay nv", "Nham saj phat") == []
+    assert muffin.relevance_problems("Pong tvr ey", "Pg nham bay") == []
+    assert note_emotion("She should be angry to me") == "angry"
+    assert note_emotion("be soft with him") == "soft"
+    assert is_neutral_reply(["Hmm"])
+    assert not is_neutral_reply(["Khg bong eg nv"])
+
+
+def test_typo_message_asks_instead_of_guessing(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    assert muffin.reply(1, "Der kg jit nis ter") == ["Mean ey bong?"]
