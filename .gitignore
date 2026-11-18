@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+logs/
+.env
+*.tmp
+data/*
+!data/pairs.jsonl
+!data/stickers.json
+!data/stats.json
+!data/vocab.json
+adapters/
