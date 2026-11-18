@@ -302,6 +302,9 @@ def clean_reply(text: str) -> str:
 
 
 KHMER_SCRIPT = re.compile(r"[\u1780-\u17ff]")
+FOREIGN_SCRIPT = re.compile(
+    r"[\u0590-\u05FF\u0600-\u06FF\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]"
+)
 KHMER_TO_ROMAN = [
     ("ណាស់", "nas"),
     ("អត់", "ot"),
@@ -500,6 +503,10 @@ class LLM:
                 response.raise_for_status()
                 data = response.json()
                 return (data["choices"][0]["message"]["content"] or "").strip()
+            except httpx.ReadTimeout as exc:
+                last_error = exc
+                log.warning("LLM timed out after %.0fs", self.config.timeout)
+                break
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 body = exc.response.text[:300].replace("\n", " ")
@@ -660,6 +667,9 @@ class Muffin:
         self.reactions = reaction_store or ReactionStore(Path("data") / "reactions.json")
         self.threads = thread_store or ThreadStore(Path("data") / "threads.json")
         self.corrections = corrections or Corrections()
+        self.last_provider = config.model
+        self.last_fallbacks: list[str] = []
+        self.last_style_issues: list[str] = []
         self.chats: dict[int, Chat] = {}
         for chat_id, messages in self.history.chats.items():
             try:
@@ -814,6 +824,7 @@ class Muffin:
                 or "127.0.0.1" in llm.config.base_url
             )
             tokens = max_tokens if local else max(max_tokens, 900 if code else 700)
+            self.last_fallbacks.append(llm.config.model)
             log.info("falling back to %s (%s)", llm.config.model, llm.config.base_url)
             send_messages = messages
             if not local:
@@ -838,6 +849,7 @@ class Muffin:
                 log.warning("fallback %s failed: %s", llm.config.model, exc)
                 continue
             if raw.strip():
+                self.last_provider = llm.config.model
                 return raw
             log.warning("fallback %s returned nothing", llm.config.model)
         return ""
@@ -849,6 +861,7 @@ class Muffin:
         note: str,
         history: list[dict],
         rejected: str = "",
+        reset_metrics: bool = True,
     ) -> list[str]:
         """Rewrite a rejected answer so it follows Bong's note.
 
@@ -856,6 +869,10 @@ class Muffin:
         softer"), not the literal reply. It is sent to the model together with
         the real few-shot examples, and the old line is explicitly banned.
         """
+        if reset_metrics:
+            self.last_provider = self.config.model
+            self.last_fallbacks = []
+            self.last_style_issues = []
         mood = self.mood.snapshot(chat_id)
         life = self.life.observe(chat_id)
         return self._note_reply(chat_id, text, note, rejected, mood, life, history)
@@ -899,6 +916,7 @@ class Muffin:
             max_tokens = max(max_tokens, self.config.remote_min_tokens)
 
         raw = ""
+        self.last_provider = self.config.model
         try:
             raw = self.llm.chat(
                 messages,
@@ -947,6 +965,8 @@ class Muffin:
                 problems.append("khmer")
         if "," in plain:
             problems.append("comma")
+        if FOREIGN_SCRIPT.search(plain):
+            problems.append("foreign")
         if not looks_english(user_text) and looks_english(plain):
             problems.append("english")
         return problems
@@ -954,6 +974,7 @@ class Muffin:
     def style_fix(self, parts: list[str], user_text: str = "") -> list[str]:
         fixed: list[str] = []
         for part in parts:
+            part = FOREIGN_SCRIPT.sub("", part)
             part = normalize_script(part, user_text)
             if not looks_english(user_text):
                 part = drop_commas(part)
@@ -1080,6 +1101,9 @@ class Muffin:
         return message
 
     def proactive(self, chat_id: int) -> list[str]:
+        self.last_provider = self.config.model
+        self.last_fallbacks = []
+        self.last_style_issues = []
         chat = self.chats.setdefault(chat_id, Chat())
         mood = self.mood.snapshot(chat_id)
         life = self.life.observe(chat_id)
@@ -1104,6 +1128,7 @@ class Muffin:
             else 80
         )
         raw = ""
+        self.last_provider = self.config.model
         try:
             raw = self.llm.chat(
                 messages,
@@ -1134,6 +1159,9 @@ class Muffin:
         return split_messages(reply, "", mood.mood, generated=True)[:2]
 
     def _code_reply(self, chat_id: int, text: str, life: Activity) -> list[str]:
+        self.last_provider = self.config.model
+        self.last_fallbacks = []
+        self.last_style_issues = []
         chat = self.chats.setdefault(chat_id, Chat())
         system = (
             "You are Muffin, a Khmerlish Telegram bot. Bong asked you for code.\n"
@@ -1147,6 +1175,7 @@ class Muffin:
 
         max_tokens = 900 if "localhost" not in self.config.base_url else 600
         raw = ""
+        self.last_provider = self.config.model
         try:
             raw = self.llm.chat(
                 messages,
@@ -1234,6 +1263,9 @@ class Muffin:
         randomness, never with the reply Bong just rejected.
         """
         chat = self.chats.setdefault(chat_id, Chat())
+        self.last_provider = "handler"
+        self.last_fallbacks = []
+        self.last_style_issues = []
         for message in prior:
             if message.strip():
                 self.threads.observe_user(chat_id, message)
@@ -1257,6 +1289,7 @@ class Muffin:
         joined = "\n".join(parts)
         problems = self.style_problems(joined, text)
         if problems:
+            self.last_style_issues.extend(problems)
             fixed = self.style_fix(parts, text)
             remaining = self.style_problems("\n".join(fixed), text)
             if not remaining:
@@ -1604,6 +1637,7 @@ class Muffin:
             mood.patience,
         )
         raw = ""
+        self.last_provider = self.config.model
         try:
             raw = self.llm.chat(
                 messages,

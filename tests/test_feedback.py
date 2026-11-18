@@ -108,6 +108,7 @@ class FakeTelegram:
         self.edits = []
         self.sent = []
         self.deleted = []
+        self.answers = []
 
     def typing(self, chat_id):
         pass
@@ -128,6 +129,9 @@ class FakeTelegram:
 
     def edit_markup(self, chat_id, message_id, markup):
         pass
+
+    def answer_callback(self, callback_id, text=""):
+        self.answers.append((callback_id, text))
 
 
 def test_note_rewrites_in_place(tmp_path, retriever, monkeypatch):
@@ -289,11 +293,13 @@ def test_style_guard_detects_and_fixes(tmp_path, retriever):
     assert "english" in muffin.style_problems(
         "My favorite is maybe Spider-Man but I forget", "Pong tvr ey"
     )
+    assert "foreign" in muffin.style_problems("Ng haii \u05d4\u05e0\u05d4", "Pong tvr ey")
     assert not looks_english("Mi hel maybe")
     assert looks_english("Good night my friend")
 
     fixed = muffin.style_fix(["Nv, Kjel tv na\u178e\u17b6\u179f\u17cb"], "Pong tvr ey")
     assert fixed == ["Nv Kjel tv na nas"]
+    assert muffin.style_fix(["Ng haii \u05d4\u05e0\u05d4"], "Pong tvr ey") == ["Ng haii"]
 
     chat = Chat()
     muffin._remember(1, chat, "Pong tvr ey", "Nv, Kjel tv na\u178e\u17b6\u179f\u17cb")
@@ -307,3 +313,89 @@ def test_persona_has_life_facts():
     assert "17:30" in persona
     assert "responsibility" in persona
     assert "ask him what he means" in persona
+
+
+def test_handle_callback_ok_fix_and_too_old(tmp_path, retriever):
+    from worker import handle_callback
+
+    muffin = make_muffin(tmp_path, retriever)
+    feedback = FeedbackStore(tmp_path)
+    feedback.add(
+        SentReply(
+            id="r1",
+            chat_id=1,
+            user="Pong tvr ey",
+            parts=["Pg nv pteas"],
+            prior=[],
+        )
+    )
+    tg = FakeTelegram()
+
+    def callback(data):
+        return {
+            "id": "cb1",
+            "data": data,
+            "message": {"message_id": 77, "chat": {"id": 1}},
+        }
+
+    handle_callback(tg, muffin, feedback, {}, None, callback("fb:ok:r1"))
+    assert feedback.get("r1").status == "ok"
+    assert tg.answers[-1] == ("cb1", "Saved")
+
+    handle_callback(tg, muffin, feedback, {}, None, callback("fb:fix:r1"))
+    assert feedback.pending["1"] == "r1"
+    assert "wrong" in tg.sent[-1][0].lower()
+
+    handle_callback(tg, muffin, feedback, {}, None, callback("fb:ok:missing"))
+    assert tg.answers[-1][1] == "Too old"
+
+
+def test_handle_callback_regenerate_submits_job(tmp_path, retriever, monkeypatch):
+    import worker
+    from worker import handle_callback
+
+    muffin = make_muffin(tmp_path, retriever)
+    feedback = FeedbackStore(tmp_path)
+    record = SentReply(
+        id="r2", chat_id=1, user="Pong tvr ey", parts=["Pg nv pteas"], prior=[]
+    )
+    feedback.add(record)
+
+    class FakeWorker:
+        def __init__(self):
+            self.record = None
+
+        def submit_regen(self, submitted):
+            self.record = submitted
+
+    fake = FakeWorker()
+    monkeypatch.setattr(worker, "get_worker", lambda *args, **kwargs: fake)
+    tg = FakeTelegram()
+    callback = {
+        "id": "cb2",
+        "data": "fb:regen:r2",
+        "message": {"message_id": 77, "chat": {"id": 1}},
+    }
+    handle_callback(tg, muffin, feedback, {}, None, callback)
+    assert fake.record is not None and fake.record.id == "r2"
+
+
+def test_metrics_summary(tmp_path):
+    from metrics import Metrics
+
+    metrics = Metrics(tmp_path / "metrics.jsonl")
+    for index, latency in enumerate([1.0, 2.0, 3.0, 4.0, 5.0]):
+        metrics.record(
+            1,
+            latency,
+            "primary" if index < 4 else "fallback-model",
+            [] if index < 4 else ["fallback-model"],
+            ["comma"] if index == 0 else [],
+            "reply",
+        )
+    summary = metrics.summary()
+    assert summary["count"] == 5
+    assert summary["p50"] == 3.0
+    assert abs(summary["fallback_rate"] - 0.2) < 1e-9
+    assert summary["style_fixes"] == 1
+    assert summary["providers"]["primary"] == 4

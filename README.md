@@ -137,6 +137,18 @@ muffin-bot/
 └── .env                token and model config (never commit)
 ```
 
+## Quality eval
+
+`question_audit.py` is a regression check on exact archive lines. Real quality is
+measured with multi-turn dialogs:
+
+```bash
+.venv/bin/python eval_conversations.py          # review page
+.venv/bin/python eval_conversations.py --judge  # + LLM scores
+```
+
+See `EVAL.md`. In Telegram, `/metrics` shows latency, fallback rate and style fixes.
+
 ## Privacy
 
 The export is a private two-person chat. `data/pairs.jsonl`, `data/sft_*.jsonl`
