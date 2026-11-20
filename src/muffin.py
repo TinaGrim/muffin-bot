@@ -137,6 +137,13 @@ BANNED = re.compile(
 AFFIRM = re.compile(r"^\s*(yes|yepp?|yep|ok(ay)?|okiee?|hmm+|hxhx|haha+|lol|👍+|🙏+)\s*[.!]*\s*$", re.I)
 YES = re.compile(r"^\s*(yes|yeah|yep|yup|ok(ay)?|okiee?|👍|🙏)\b", re.I)
 NO = re.compile(r"^\s*(no|nope|nah|ort|ot)\b", re.I)
+MORNING_GREETING = re.compile(r"^\s*(good\s*)?morning\b", re.I)
+COLD_CONTEXT = re.compile(
+    r"\b(morning|slnh|love|miss|srey|girl|jealous|bong|oun)\b", re.I
+)
+RETURN_QUESTION = re.compile(
+    r"\b(tas pov|jos oun|jos bong|and you|what about you)\b", re.I
+)
 # One-off generic fillers: their single archived reply belongs to one
 # conversation, so replaying it out of context is nonsense.
 GENERIC_REPLAY_BLOCK = {
@@ -1507,10 +1514,12 @@ class Muffin:
             reaction.missed_morning
             and not substantive
             and not AWAKE_QUESTION.match(text)
-            and random.random() < 0.30
+            and not MORNING_GREETING.search(text)
+            and COLD_CONTEXT.search(text)
+            and random.random() < 0.15
         ):
             cold = self.reactions.cold_for(reaction)
-        elif reaction.jealous and random.random() < 0.40:
+        elif reaction.jealous and random.random() < 0.25:
             cold = self.reactions.cold_for(reaction)
         if cold:
             self.mood.adjust(chat_id, patience=-8, affection=-3)
@@ -1665,6 +1674,17 @@ class Muffin:
 
         if CODE_REQUEST.search(text):
             return self._code_reply(chat_id, text, life)
+
+        # "Yes nham ruc hz tas pov" is an answer plus "and you?"; do not
+        # collapse it to a bare "Yes" and make him repeat himself.
+        if RETURN_QUESTION.search(text):
+            if FOOD_ASK.search(text) or FOOD_WORDS.search(last_assistant):
+                reply = "Oun nham ruc hz"
+            else:
+                reply = random.choice(["Oun hz", "Oun tvr ey?", "Oun nham ruc hz"])
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
 
         # An exact real replay beats generic heuristics such as the sleep
         # rule: "Are you sleeping yet?" really was answered "Nv teh" once.

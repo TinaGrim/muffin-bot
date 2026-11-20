@@ -161,7 +161,7 @@ def run_telegram(muffin: Muffin, env: dict[str, str]) -> None:
                         "/life shows what it is doing, /resetlife rerolls that, "
                         "/resetmood calms it down, /poke makes it text you first, "
                         "/proactive turns spontaneous texts on or off. "
-                        "/train toggles the OK / Regenerate / Recommend buttons. "
+                        "/train toggles the OK / Bad / Recommend buttons. "
                         "/metrics shows reply latency and fallback rate.",
                     )
                     continue
@@ -169,7 +169,7 @@ def run_telegram(muffin: Muffin, env: dict[str, str]) -> None:
                     on = feedback.toggle_training(chat["id"])
                     tg.send(
                         chat["id"],
-                        "Train mode on: each reply has OK / Regenerate / Recommend."
+                        "Train mode on: each reply has OK / Bad / Recommend."
                         if on
                         else "Train mode off",
                     )

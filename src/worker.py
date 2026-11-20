@@ -24,7 +24,7 @@ def feedback_keyboard(record_id: str) -> dict:
         "inline_keyboard": [
             [
                 {"text": "✅ OK", "callback_data": f"fb:ok:{record_id}"},
-                {"text": "🔄 Regenerate", "callback_data": f"fb:regen:{record_id}"},
+                {"text": "👎 Bad", "callback_data": f"fb:bad:{record_id}"},
             ],
             [
                 {
@@ -507,8 +507,12 @@ def handle_callback(
         tg.send(chat_id, "What was wrong? Send a note for her.")
         return
 
-    if action == "regen":
-        tg.answer_callback(callback_id, "Again")
+    if action in {"regen", "bad"}:
+        if action == "bad":
+            feedback.log(record, "bad", "rejected")
+            tg.answer_callback(callback_id, "Bad")
+        else:
+            tg.answer_callback(callback_id, "Again")
         worker = get_worker(
             tg, muffin, feedback, workers, registry, chat_id, metrics
         )

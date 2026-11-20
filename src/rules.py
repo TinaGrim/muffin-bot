@@ -22,6 +22,10 @@ OVERRIDES: list[tuple[re.Pattern[str], list[str]]] = [
         ["Morning", "Morning bong", "Mg 7"],
     ),
     (
+        re.compile(r"\bsg\b.*\b(ey|pov|na|mean|ke)\b|\bmean\b.*\bsg\b", re.I),
+        ["Sg = sangsar bong", "Sg sangsar ng", "Sg = srey ng bong"],
+    ),
+    (
         re.compile(r"^\s*kiss(\s*kiss)?\s*[?.!]*$", re.I),
         ["Ort Ot jg", "Tic tt", "Ort"],
     ),

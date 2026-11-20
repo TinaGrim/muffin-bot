@@ -95,6 +95,11 @@ def test_intent_rules():
         "Slnh bong",
         "Kit bong",
     }
+    assert rule_reply("sg ng ey ke pov") in {
+        "Sg = sangsar bong",
+        "Sg sangsar ng",
+        "Sg = srey ng bong",
+    }
     assert rule_reply("ort nk morning ban ort?") is None
     assert rule_reply("tnaii ng ban ey nham bay nv") in {
         "Nham bay prek nv",

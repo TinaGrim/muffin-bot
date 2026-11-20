@@ -240,7 +240,7 @@ def test_error_reply_gets_review_keyboard(tmp_path, retriever, monkeypatch):
     text, markup = tg.sent[-1]
     assert text == "Ort"
     assert markup is not None
-    assert any("fb:regen:" in button["callback_data"] for row in markup["inline_keyboard"] for button in row)
+    assert any("fb:bad:" in button["callback_data"] for row in markup["inline_keyboard"] for button in row)
     record = next(iter(feedback.records.values()))
     assert record["parts"] == ["Ort"]
 
@@ -350,7 +350,7 @@ def test_handle_callback_ok_fix_and_too_old(tmp_path, retriever):
     assert tg.answers[-1][1] == "Too old"
 
 
-def test_handle_callback_regenerate_submits_job(tmp_path, retriever, monkeypatch):
+def test_handle_callback_bad_submits_job(tmp_path, retriever, monkeypatch):
     import worker
     from worker import handle_callback
 
@@ -373,11 +373,12 @@ def test_handle_callback_regenerate_submits_job(tmp_path, retriever, monkeypatch
     tg = FakeTelegram()
     callback = {
         "id": "cb2",
-        "data": "fb:regen:r2",
+        "data": "fb:bad:r2",
         "message": {"message_id": 77, "chat": {"id": 1}},
     }
     handle_callback(tg, muffin, feedback, {}, None, callback)
     assert fake.record is not None and fake.record.id == "r2"
+    assert tg.answers[-1] == ("cb2", "Bad")
 
 
 def test_metrics_summary(tmp_path):
@@ -419,3 +420,8 @@ def test_relevance_junk_and_emotion_guards(tmp_path, retriever):
 def test_typo_message_asks_instead_of_guessing(tmp_path, retriever):
     muffin = make_muffin(tmp_path, retriever)
     assert muffin.reply(1, "Der kg jit nis ter") == ["Mean ey bong?"]
+
+
+def test_return_question_is_answered(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    assert muffin.reply(1, "Yes nham ruc hz tas pov") == ["Oun nham ruc hz"]

@@ -16,6 +16,7 @@ BADGE = {
     "ok": ("OK", "ok"),
     "fixed": ("Fixed by note", "fix"),
     "regenerated": ("Regenerated", "regen"),
+    "bad": ("Bad", "regen"),
     "pending": ("Not reviewed", "pending"),
 }
 
