@@ -425,3 +425,18 @@ def test_typo_message_asks_instead_of_guessing(tmp_path, retriever):
 def test_return_question_is_answered(tmp_path, retriever):
     muffin = make_muffin(tmp_path, retriever)
     assert muffin.reply(1, "Yes nham ruc hz tas pov") == ["Oun nham ruc hz"]
+
+
+def test_burst_target_prefers_the_question():
+    from worker import pick_target
+
+    burst = [
+        "Hmm ? What do you mean",
+        "Ort reply ah bong jg",
+        "Hello oun",
+        "Morning oun",
+    ]
+    assert pick_target(burst) == "Hmm ? What do you mean"
+    assert pick_target(["hello", "morning"]) == "morning"
+    assert pick_target(["I am home", "what are you doing"]) == "what are you doing"
+    assert pick_target(["Morning oun"]) == "Morning oun"

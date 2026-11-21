@@ -18,6 +18,29 @@ from telegram_client import Telegram
 log = logging.getLogger("muffin")
 
 
+def pick_target(burst: list[str]) -> str:
+    """Answer the message that matters, not just the last one in a burst."""
+    for text in reversed(burst):
+        if "?" in text:
+            return text
+    greetings = {
+        "hello",
+        "hi",
+        "hey",
+        "bart",
+        "hmm",
+        "hello oun",
+        "morning",
+        "morning oun",
+        "morning bong",
+        "good night",
+    }
+    for text in reversed(burst):
+        if text.strip().lower() not in greetings:
+            return text
+    return burst[-1]
+
+
 def feedback_keyboard(record_id: str) -> dict:
     """Review buttons attached to the last bubble of each answer."""
     return {
@@ -114,25 +137,28 @@ class ChatWorker(threading.Thread):
     def _answer_inner(
         self, burst: list[str], message_id: int | None, specific: bool
     ) -> None:
-        text = burst[-1]
+        target = pick_target(burst)
+        text = target
         # Keep a human beat, but never add a long pause on top of a slow model.
         time.sleep(min(self.muffin.human_delay(self.chat_id), 1.5))
         self.tg.typing(self.chat_id)
         started = time.time()
         chat = self.muffin.chats.setdefault(self.chat_id, Chat())
         history_start = list(chat.history)
+        target_index = burst.index(target)
+        prior = burst[:target_index] + burst[target_index + 1 :]
         try:
-            parts = self.muffin.reply(self.chat_id, text, prior=burst[:-1])
+            parts = self.muffin.reply(self.chat_id, text, prior=prior)
         except Exception as exc:  # noqa: BLE001
             log.exception("reply failed: %s", exc)
             # Even a failure answer gets the review buttons, so Bong can press
             # Regenerate once the cause is gone instead of losing the message.
             history_before = history_start + [
                 {"role": "user", "content": message}
-                for message in burst[:-1]
+                for message in prior
                 if message.strip()
             ]
-            record = self._new_record(text, ["Ort"], burst[:-1], history_before)
+            record = self._new_record(text, ["Ort"], prior, history_before)
             self._deliver(["Ort"], message_id, specific, record)
             return
 
@@ -155,10 +181,10 @@ class ChatWorker(threading.Thread):
 
         history_before = history_start + [
             {"role": "user", "content": message}
-            for message in burst[:-1]
+            for message in prior
             if message.strip()
         ]
-        record = self._new_record(text, parts, burst[:-1], history_before)
+        record = self._new_record(text, parts, prior, history_before)
 
         log.info(
             "chat=%s %.1fs %r -> %r",
