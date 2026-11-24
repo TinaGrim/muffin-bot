@@ -12,3 +12,4 @@ data/*
 !data/stats.json
 !data/vocab.json
 adapters/
+vendor/
