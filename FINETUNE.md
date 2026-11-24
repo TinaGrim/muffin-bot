@@ -82,3 +82,62 @@ The held-out exact-match rate is not a useful target: even returning the
 nearest real reply from the training set scores 0% exact on these conversations,
 because Muffin's wording is highly context-specific. The useful signals are
 length/style match and whether the reply answers the message.
+
+## 3B QLoRA on the Mac (M1, 8 GB)
+
+The 0.5B recipe above still works. A 3B 4-bit model fits *only* when the Mac
+has free memory; see the warning below.
+
+```bash
+# one-time model download
+.venv/bin/python -c "from huggingface_hub import snapshot_download as d; print(d('mlx-community/Qwen2.5-3B-Instruct-4bit'))"
+
+# train (resumes automatically if an adapter exists)
+./fine_tune/train_3b_mac.sh
+
+# longer run
+ITERS=4000 ./fine_tune/train_3b_mac.sh
+```
+
+Settings: 4-bit base, LoRA rank 8 on 16 layers, batch 1, seq 512,
+gradient checkpointing, lr 5e-5, prompt masked.
+
+Measured on this Mac:
+
+| Run | Result |
+|---|---|
+| 10 iters, seq 512, batch 1 | 2.2 s, loss 12.4 → 5.9 |
+| 3B full run, 8 GB under pressure | ~3 s/iter, swaps hard |
+| 3B after a fresh reboot (expected) | ~0.2–0.5 s/iter |
+
+If the log stalls after the first `val` line and CPU stays near 10%, macOS is
+swapping. Check:
+
+```bash
+sysctl vm.swapusage
+vm_stat | grep -E "Pages free|Pages wired"
+```
+
+With more than ~4 GB of swap in use, reboot first. The Mac had 7 days of uptime
+and 10 GB of swap when 3B thrashing was observed. Pause the bot and Ollama
+during training:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.muffin.bot.plist
+brew services stop ollama
+# after training
+launchctl load ~/Library/LaunchAgents/com.muffin.bot.plist
+brew services start ollama
+```
+
+Serve the adapter:
+
+```bash
+MODEL=mlx-community/Qwen2.5-3B-Instruct-4bit ADAPTER=adapters/muffin-3b ./serve_mlx.sh
+```
+
+Then set `LLM_MODEL=Qwen2.5-3B-Instruct-4bit` (the server reports the base name)
+and `ADAPTER_MODE=true` in `.env`.
+
+The 4060 PC is still much faster for the same 3B/7B job: CUDA QLoRA uses 8 GB
+of VRAM instead of fighting macOS for unified memory.
