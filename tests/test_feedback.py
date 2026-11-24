@@ -417,6 +417,34 @@ def test_relevance_junk_and_emotion_guards(tmp_path, retriever):
     assert not is_neutral_reply(["Khg bong eg nv"])
 
 
+def test_fallback_drift_is_replaced_with_short_line(tmp_path, retriever):
+    from types import SimpleNamespace
+
+    class DriftingLLM:
+        config = SimpleNamespace(model="fake-fallback", base_url="https://example.com/v1")
+
+        def chat(self, *args, **kwargs):
+            return (
+                "Kort mk sur ahyuk oun pi mak oun hx sur tha oun rean nv "
+                "ea na hx mean sneha nv tonle bong"
+            )
+
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.fallbacks = [DriftingLLM()]
+    parts = muffin.reply(1, "Kjel tv prean nv")
+    assert parts
+    assert len(" ".join(parts).split()) <= 12
+    assert muffin.last_provider == "fake-fallback"
+
+
+def test_profane_replay_is_junk():
+    from muffin import junk_reply
+
+    assert junk_reply("Bitch Jg bork oun rol dong")
+    assert junk_reply("Bajjjj")
+    assert not junk_reply("Morning bong")
+
+
 def test_typo_message_asks_instead_of_guessing(tmp_path, retriever):
     muffin = make_muffin(tmp_path, retriever)
     assert muffin.reply(1, "Der kg jit nis ter") == ["Mean ey bong?"]

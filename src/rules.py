@@ -19,7 +19,7 @@ OVERRIDE_BLOCK: list[re.Pattern[str]] = [
 OVERRIDES: list[tuple[re.Pattern[str], list[str]]] = [
     (
         re.compile(r"^\s*(good\s*)?morning\b", re.I),
-        ["Morning", "Morning bong", "Mg 7"],
+        ["Morning bong", "Morning oun hz", "Morning"],
     ),
     (
         re.compile(r"\bsg\b.*\b(ey|pov|na|mean|ke)\b|\bmean\b.*\bsg\b", re.I),
@@ -87,7 +87,10 @@ INTENTS: list[tuple[re.Pattern[str], list[str]]] = [
         ["Yep", "Yes", "Okay"],
     ),
     (re.compile(r"^(hi|hii+|hello|helo|hey|heyy+|hallo|bart)\b", re.I), ["Bart"]),
-    (re.compile(r"^\s*(good\s*morning|morning)\b", re.I), ["Morning"]),
+    (
+        re.compile(r"^\s*(good\s*morning|morning)\b", re.I),
+        ["Morning bong", "Morning oun hz"],
+    ),
     (re.compile(r"\bthank(s| you| u)\b", re.I), ["Okay"]),
     (re.compile(r"^(bye|byebye|goodbye|good bye)\b", re.I), ["Bye"]),
     (

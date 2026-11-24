@@ -86,7 +86,11 @@ def test_clean_and_split():
 
 
 def test_intent_rules():
-    assert rule_reply("good morning bong") in {"Morning", "Morning bong", "Mg 7"}
+    assert rule_reply("good morning bong") in {
+        "Morning",
+        "Morning bong",
+        "Morning oun hz",
+    }
     assert rule_reply("hello") == "Bart"
     assert rule_reply("I'm sad today") == "Kom sad teh bong, oun nv nh"
     assert rule_reply("kiss kiss?") in {"Ort Ot jg", "Tic tt", "Ort"}

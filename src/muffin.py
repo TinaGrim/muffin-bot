@@ -421,6 +421,20 @@ DOING_ASK = re.compile(
 TYPO_QUESTION = re.compile(r"\bder\s+(kg|lg)\b|\bkg\s+ler\b", re.I)
 
 
+# Insults that are only funny in their original fight, never as a random
+# replay to a greeting or a normal question.
+PROFANE = re.compile(
+    r"\b(bitch|bitches|slut|whore|fuck(?:ing|ed)?|shit|dick|cunt|"
+    r"bastard|asshole|retard(?:ed)?)\b",
+    re.I,
+)
+
+
+def too_long_for_chat(text: str, max_words: int = 12) -> bool:
+    """A chat line this long is a drift, not a reply."""
+    return len((text or "").split()) > max_words
+
+
 def junk_reply(text: str) -> bool:
     """One-off noise that should never be replayed as a chat line."""
     text = (text or "").strip()
@@ -429,6 +443,8 @@ def junk_reply(text: str) -> bool:
     if re.search(r"(.)\1{3,}", text):  # Bajjjj, nooooo
         return True
     if re.fullmatch(r"[\d\W_]+", text):
+        return True
+    if PROFANE.search(text):
         return True
     return False
 
@@ -906,11 +922,19 @@ class Muffin:
                 # the house style at the very end, where it has the most weight.
                 send_messages = [dict(message) for message in messages]
                 if send_messages and send_messages[0].get("role") == "system":
-                    send_messages[0]["content"] += (
+                    examples = self._fallback_examples(send_messages)
+                    extra = (
                         "\n\nSTRICT: reply only in Khmerlish written with Latin "
-                        "letters, one short line. Do not use Khmer script and do "
-                        "not answer in English."
+                        "letters, one short line of at most six words. Do not use "
+                        "Khmer script and do not answer in English. Do not tell "
+                        "stories or mention family members."
                     )
+                    if examples:
+                        extra += (
+                            "\nReal replies to similar messages (borrow the voice, "
+                            "answer Bong's message, never copy):\n" + examples
+                        )
+                    send_messages[0]["content"] += extra
             try:
                 raw = llm.chat(
                     send_messages,
@@ -1103,6 +1127,41 @@ class Muffin:
                 fixed.append(part.strip())
         return fixed or parts
 
+    def _fallback_examples(self, messages: list[dict], limit: int = 3) -> str:
+        """Two or three short real lines to keep a fallback model on topic."""
+        question = ""
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                question = message.get("content") or ""
+                break
+        if not question:
+            return ""
+        try:
+            hits = self.retriever.search(question, k=12)
+        except Exception as exc:  # noqa: BLE001 - retrieval may be offline
+            log.warning("fallback examples failed: %s", exc)
+            return ""
+        lines: list[str] = []
+        for hit in hits:
+            if hit["score"] < 0.60:
+                continue
+            reply = (hit.get("reply") or "").strip()
+            if not reply or too_long_for_chat(reply, 10) or junk_reply(reply):
+                continue
+            lines.append(f"Bong: {clip(hit['user'])}\nMuffin: {clip(reply)}")
+            if len(lines) >= limit:
+                break
+        return "\n".join(lines)
+
+    def _short_reply(
+        self, chat_id: int, text: str, last_assistant: str, life: Activity
+    ) -> str:
+        """Deterministic short answer used when a provider drifts."""
+        contextual = self._context_reply(text, last_assistant)
+        if contextual:
+            return contextual
+        return self._safe_fallback(chat_id, text, last_assistant, life)
+
     def _safe_fallback(
         self, chat_id: int, text: str, last_assistant: str, life: Activity
     ) -> str:
@@ -1121,12 +1180,19 @@ class Muffin:
         # No exact line, no model: answer with the closest real exchange instead
         # of a generic activity line.
         try:
-            for hit in self.retriever.search(text, k=5):
-                if hit["score"] < self.config.fallback_min_score:
-                    break
+            hits = [
+                hit
+                for hit in self.retriever.search(text, k=8)
+                if hit["score"] >= self.config.fallback_min_score
+            ]
+            # Prefer a short, chat-sized line over a long archive sentence.
+            hits.sort(key=lambda hit: (too_long_for_chat(hit["reply"], 14), -hit["score"]))
+            for hit in hits:
                 reply = hit["reply"]
                 if (
                     BANNED.search(reply)
+                    or junk_reply(reply)
+                    or self.relevance_problems(text, reply)
                     or re.fullmatch(r"[\d\W_]+", reply)
                     or len(reply) > 160
                     or self.life.conflicts(life, reply)
@@ -1836,8 +1902,15 @@ class Muffin:
             )
 
         reply = clean_reply(raw)
+        drifted = (
+            self.last_provider != self.config.model
+            and too_long_for_chat(reply)
+        )
         if not reply or re.fullmatch(r"[\d\W_]+", reply) or BANNED.search(reply):
             reply = self._safe_fallback(chat_id, text, last_assistant, life)
+        elif drifted:
+            log.info("fallback drift rejected: %r", reply[:100])
+            reply = self._short_reply(chat_id, text, last_assistant, life)
         elif is_stock_echo(reply) or only_echoes(reply):
             log.info("stock glossary echo rejected: %r", reply)
             reply = self._safe_fallback(chat_id, text, last_assistant, life)
