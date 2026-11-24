@@ -7,7 +7,7 @@ This is the real fine-tune path. It runs on the PC, not on the 8 GB Mac.
 | Component | Requirement |
 |---|---|
 | GPU | RTX 4060 8 GB or 16 GB (8 GB works with the settings below) |
-| RAM | 16 GB minimum, 32 GB comfortable |
+| RAM | 16 GB minimum, **32 GB = comfortable** (also enough to merge a 7B in RAM) |
 | OS | Ubuntu or Windows + WSL2 (Unsloth does not run natively on macOS) |
 | Disk | ~20 GB free (7B base + adapter + merged model) |
 | Time | 1–3 hours for 2 epochs on 25k samples |
@@ -67,10 +67,19 @@ python fine_tune/train_unsloth.py \
   --train fine_tune/data/train.jsonl \
   --valid fine_tune/data/valid.jsonl \
   --out fine_tune/out/muffin-7b \
-  --max-seq 1024 --batch 1 --grad-accum 16 \
   --epochs 2 --lr 2e-4 \
   --save-steps 200
 ```
+
+The script prints the detected card and picks the plan automatically:
+
+```
+GPU: NVIDIA GeForce RTX 4060 | VRAM 8.6 GB | seq 1024 | batch 1 x 16
+```
+
+32 GB of system RAM does not change this plan; it only makes `--merge` and
+GGUF export safe. Override `--max-seq`, `--batch` or `--grad-accum` only if
+auto-detection guesses wrong.
 
 What the script does:
 

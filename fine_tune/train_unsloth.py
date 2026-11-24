@@ -33,19 +33,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-seq",
         type=int,
-        default=1024,
-        help="1024 is safe on 8 GB; use 2048 on a 16 GB card.",
+        default=0,
+        help="0 = auto from VRAM (1024 on 8 GB, 2048 on 16 GB).",
     )
     parser.add_argument("--epochs", type=float, default=2)
     parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--batch", type=int, default=1)
-    parser.add_argument("--grad-accum", type=int, default=16)
+    parser.add_argument("--batch", type=int, default=0, help="0 = auto")
+    parser.add_argument("--grad-accum", type=int, default=0, help="0 = auto")
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--save-steps", type=int, default=200)
     parser.add_argument("--merge", action="store_true")
     parser.add_argument("--gguf", action="store_true")
     return parser.parse_args()
+
+
+def auto_plan() -> tuple[float, int, int, int]:
+    """Pick sequence length, batch and accumulation from the GPU's VRAM."""
+    if not torch.cuda.is_available():
+        raise SystemExit("no CUDA GPU found; run this on the PC, not the Mac")
+    vram = torch.cuda.get_device_properties(0).total_memory / 1e9
+    if vram <= 10:
+        return vram, 1024, 1, 16
+    if vram <= 18:
+        return vram, 2048, 2, 8
+    return vram, 4096, 2, 8
 
 
 def build_trainer_config(kwargs: dict) -> SFTConfig:
@@ -61,6 +73,17 @@ def build_trainer_config(kwargs: dict) -> SFTConfig:
 
 def main() -> None:
     args = parse_args()
+    vram, auto_seq, auto_batch, auto_accum = auto_plan()
+    if args.max_seq <= 0:
+        args.max_seq = auto_seq
+    if args.batch <= 0:
+        args.batch = auto_batch
+    if args.grad_accum <= 0:
+        args.grad_accum = auto_accum
+    print(
+        f"GPU: {torch.cuda.get_device_name(0)} | VRAM {vram:.1f} GB | "
+        f"seq {args.max_seq} | batch {args.batch} x {args.grad_accum}"
+    )
     for path in (args.train, args.valid):
         if not Path(path).exists():
             raise SystemExit(f"missing {path}; run fine_tune/prepare_data.py first")
