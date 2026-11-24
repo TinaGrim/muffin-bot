@@ -13,3 +13,5 @@ data/*
 !data/vocab.json
 adapters/
 vendor/
+fine_tune/data/
+fine_tune/out/
