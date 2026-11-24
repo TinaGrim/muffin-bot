@@ -92,6 +92,7 @@ def test_intent_rules():
         "Morning oun hz",
     }
     assert rule_reply("hello") == "Bart"
+    assert rule_reply("Bye") in {"Bye", "Bye bong"}
     assert rule_reply("I'm sad today") == "Kom sad teh bong, oun nv nh"
     assert rule_reply("kiss kiss?") in {"Ort Ot jg", "Tic tt", "Ort"}
     assert rule_reply("Bong slnh oun?") in {

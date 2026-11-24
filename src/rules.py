@@ -38,6 +38,10 @@ OVERRIDES: list[tuple[re.Pattern[str], list[str]]] = [
         ["Good night bong", "Dek hz", "Good night"],
     ),
     (
+        re.compile(r"^\s*(bye|byebye|goodbye|good\s*bye)\s*[.!]*$", re.I),
+        ["Bye", "Bye bong"],
+    ),
+    (
         re.compile(r"^\s*nv teh\s*[.!]*$", re.I),
         ["Mix yu mles"],
     ),
