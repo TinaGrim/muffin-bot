@@ -20,6 +20,7 @@ from mood import Mood, MoodStore
 from reactions import Reaction, ReactionStore
 from retrieval import Retriever, normalize
 from threads import ThreadStore
+from facts import FactStore
 from feedback import Corrections
 from rules import intent_reply, override_reply
 
@@ -283,6 +284,8 @@ class Config:
     timeout: float = 90.0
     max_reply_seconds: float = 15.0
     history_messages: int = 12
+    history_chars: int = 1800
+    history_keep: int = 200
     max_reply_chars: int = 160
     remote_min_tokens: int = 300
     # Ordered fallback chain: (base_url, api_key, model).
@@ -735,6 +738,7 @@ class Muffin:
         reaction_store: ReactionStore | None = None,
         thread_store: ThreadStore | None = None,
         corrections: Corrections | None = None,
+        facts_store: FactStore | None = None,
     ):
         self.config = config
         self.retriever = retriever
@@ -760,6 +764,7 @@ class Muffin:
         self.mood = mood_store or MoodStore(Path("data") / "mood.json")
         self.life = life_store or LifeStore(Path("data") / "life.json")
         self.history = history_store or HistoryStore(Path("data") / "history.json")
+        self.facts = facts_store or FactStore(self.mood.path.parent / "facts.json")
         self.reactions = reaction_store or ReactionStore(Path("data") / "reactions.json")
         self.threads = thread_store or ThreadStore(Path("data") / "threads.json")
         self.corrections = corrections or Corrections()
@@ -782,7 +787,14 @@ class Muffin:
         vocab = Path("data") / "vocab.json"
         self.vocab = set(json.loads(vocab.read_text(encoding="utf-8"))) if vocab.exists() else set()
 
-    def _system_prompt(self, text: str, has_history: bool, mood: Mood, life: Activity) -> str:
+    def _system_prompt(
+        self,
+        text: str,
+        has_history: bool,
+        mood: Mood,
+        life: Activity,
+        chat_id: int | None = None,
+    ) -> str:
         now = datetime.now().strftime("%A, %d %B %Y, %H:%M")
         lines = [
             self.persona,
@@ -798,6 +810,22 @@ class Muffin:
             "",
             f"Right now it is {now}.",
         ]
+
+        if chat_id is not None:
+            topic = self.threads.describe(chat_id)
+            if topic:
+                lines.append(f"Conversation so far: {topic}.")
+            gap = self._last_gap(chat_id)
+            if gap:
+                lines.append(f"The last message in this chat was {gap} ago.")
+            facts = self.facts.describe(chat_id, text)
+            if facts:
+                lines += [
+                    "",
+                    "Bong told you these things earlier. Use one only if it fits "
+                    "the latest message; never list them or recite them:",
+                    *facts,
+                ]
 
         if self.config.adapter_mode:
             return self.compact_persona
@@ -865,9 +893,65 @@ class Muffin:
         ]
         return "\n".join(lines)
 
+    def _last_gap(self, chat_id: int) -> str:
+        chat = self.chats.get(chat_id)
+        stamps = [
+            message.get("ts")
+            for message in (chat.history if chat else [])
+            if message.get("ts")
+        ]
+        if not stamps:
+            return ""
+        seconds = max(0.0, time.time() - max(stamps))
+        if seconds < 900:
+            return ""
+        if seconds < 3600:
+            return f"{int(seconds / 60)} minutes"
+        if seconds < 86400:
+            return f"{int(seconds / 3600)} hours"
+        return f"{int(seconds / 86400)} days"
+
     def _history(self, chat_id: int) -> list[dict]:
+        """Recent turns, cleaned and bounded by a character budget.
+
+        Short Khmerlish lines are cheap, so this keeps more real conversation
+        than a fixed message count while still capping prompt size.
+        """
         chat = self.chats.setdefault(chat_id, Chat())
-        return chat.history[-self.config.history_messages :]
+        cleaned = self._clean_history(chat.history)
+        budget = self.config.history_chars
+        max_messages = max(4, self.config.history_messages)
+        selected: list[dict] = []
+        used = 0
+        for message in reversed(cleaned):
+            size = len(message.get("content", ""))
+            if selected and (
+                len(selected) >= max_messages or used + size > budget
+            ):
+                break
+            selected.append(message)
+            used += size
+        return list(reversed(selected))
+
+    @staticmethod
+    def _clean_history(history: list[dict]) -> list[dict]:
+        """Drop bot noise that should not become the next model's context."""
+        cleaned: list[dict] = []
+        for message in history:
+            content = (message.get("content") or "").strip()
+            if not content:
+                continue
+            if message.get("role") == "assistant":
+                if junk_reply(content) or BANNED.search(content):
+                    continue
+                if cleaned and cleaned[-1]["role"] == "assistant":
+                    if normalize(cleaned[-1]["content"]) == normalize(content):
+                        continue
+            item = {"role": message.get("role"), "content": content}
+            if message.get("ts"):
+                item["ts"] = message["ts"]
+            cleaned.append(item)
+        return cleaned
 
     @staticmethod
     def _last_assistant(chat: Chat) -> str:
@@ -1016,7 +1100,7 @@ class Muffin:
         timeout: float | None = None,
     ) -> list[str]:
         system = self._system_prompt(
-            text, has_history=bool(history), mood=mood, life=life
+            text, has_history=bool(history), mood=mood, life=life, chat_id=chat_id
         )
         system += (
             "\n\nBong rejected your last answer."
@@ -1240,6 +1324,7 @@ class Muffin:
     def reset(self, chat_id: int) -> None:
         self.chats.pop(chat_id, None)
         self.history.reset(chat_id)
+        self.facts.reset(chat_id)
 
     def _remember(self, chat_id: int, chat: Chat, text: str, reply: str) -> None:
         # Store what was actually sent, not the raw model line: otherwise a
@@ -1248,21 +1333,24 @@ class Muffin:
         reply = normalize_script(reply, text)
         if not looks_english(text):
             reply = drop_commas(reply)
+        now = time.time()
         chat.history += [
-            {"role": "user", "content": text},
-            {"role": "assistant", "content": reply},
+            {"role": "user", "content": text, "ts": now},
+            {"role": "assistant", "content": reply, "ts": now},
         ]
         self._trim(chat)
         self.history.set(chat_id, chat.history)
 
     def _trim(self, chat: Chat) -> None:
-        limit = 2 * self.config.history_messages
+        limit = max(2 * self.config.history_messages, self.config.history_keep)
         if len(chat.history) > limit:
             chat.history = chat.history[-limit:]
 
     def remember_assistant(self, chat_id: int, text: str) -> str:
         chat = self.chats.setdefault(chat_id, Chat())
-        chat.history.append({"role": "assistant", "content": text})
+        chat.history.append(
+            {"role": "assistant", "content": text, "ts": time.time()}
+        )
         self._trim(chat)
         self.history.set(chat_id, chat.history)
         self.mood.after_reply(chat_id)
@@ -1317,7 +1405,9 @@ class Muffin:
         part_of_day = (
             "morning" if 5 <= hour < 11 else "late night" if hour >= 22 or hour < 5 else "day"
         )
-        system = self._system_prompt("", bool(chat.history), mood, life)
+        system = self._system_prompt(
+            "", bool(chat.history), mood, life, chat_id=chat_id
+        )
         system += (
             f"\n\nBong has been quiet for a while. It is {part_of_day}. You are starting"
             " the conversation this time. Send him one short message first, like Muffin"
@@ -1485,8 +1575,10 @@ class Muffin:
         for message in prior:
             if message.strip():
                 self.threads.observe_user(chat_id, message)
+                self.facts.observe(chat_id, message)
                 chat.history.append({"role": "user", "content": message})
         self.threads.observe_user(chat_id, text)
+        self.facts.observe(chat_id, text)
         start = list(chat.history)
 
         def key(value: str) -> str:
@@ -1911,7 +2003,7 @@ class Muffin:
             {
                 "role": "system",
                 "content": self._system_prompt(
-                    text, has_history=bool(history), mood=mood, life=life
+                    text, has_history=bool(history), mood=mood, life=life, chat_id=chat_id
                 ),
             }
         ]
@@ -2015,6 +2107,8 @@ def load_config(env: dict[str, str], persona_path: Path) -> Config:
         timeout=float(env.get("LLM_TIMEOUT", 90)),
         max_reply_seconds=float(env.get("MAX_REPLY_SECONDS", 15)),
         history_messages=int(env.get("HISTORY_MESSAGES", 12)),
+        history_chars=int(env.get("HISTORY_CHARS", 1800)),
+        history_keep=int(env.get("HISTORY_KEEP", 200)),
         max_reply_chars=int(env.get("MAX_REPLY_CHARS", 160)),
         remote_min_tokens=int(env.get("REMOTE_MIN_TOKENS", 300)),
         fallbacks=fallbacks,

@@ -181,3 +181,20 @@ hearing about another girl starts a grudge (`upset` in `data/mood.json`).
 Reach-outs run every 1.5-3 hours during 08:00-23:00 (see `PROACTIVE_*` in
 `.env`), with a dedicated nudge after one hour of silence while she is upset.
 Morning and good-night rituals still apply.
+
+## Real chat context
+
+The bot now keeps three layers of context, not just the last message:
+
+1. **Recent turns** - up to 40 messages or 2,000 characters (`HISTORY_MESSAGES`,
+   `HISTORY_CHARS`), stored with timestamps and persisted across restarts.
+   Profane or junk bot lines are removed before the prompt, so a bad fallback
+   does not poison the next reply.
+2. **Durable facts** - `data/facts.json` stores what Bong actually said about
+   exams, school, work, plans, family, health and preferences. Only explicit
+   statements are stored; questions are never turned into facts. The prompt
+   gets the five most relevant lines, not the whole list.
+3. **Thread state** - current topic, the question she asked last, and the last
+   question Bong asked, plus how long the chat has been quiet.
+
+`/reset` clears history, facts and thread state for the chat.

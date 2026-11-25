@@ -22,6 +22,7 @@ TOPICS = {
     "food": r"\b(nham|bay|eat|food|hungry|kteav|trey|moan|prek)\b",
     "sleep": r"\b(dek|sleep|keng|lok|night|gn)\b",
     "takmao": r"\btakmao\b",
+    "exam": r"\b(exam|test|quiz|midterm|final)\b",
     "school": r"\b(rean|school|class|teach|sala|meeting|work|code|study)\b",
     "love": r"\b(slnh|love|miss|kit bong|kiss|baby)\b",
     "music": r"\b(music|song|youtube|youtu\.be|link|video)\b|https?://",
@@ -73,6 +74,23 @@ class ThreadStore:
 
     def _get(self, chat_id: int) -> ThreadState:
         return self.chats.setdefault(str(chat_id), ThreadState())
+
+    def describe(self, chat_id: int, now: float | None = None) -> str:
+        """One short line of thread context for the system prompt."""
+        now = now if now is not None else time.time()
+        with self.lock:
+            state = self._get(chat_id)
+            parts: list[str] = []
+            if state.topic:
+                parts.append(f"the topic is {state.topic}")
+            if state.pending_question and now - state.pending_ts <= 1800:
+                parts.append(f'you asked "{state.pending_question}" and he has not answered')
+            elif (
+                state.last_user_question
+                and now - state.last_user_question_ts <= 3600
+            ):
+                parts.append(f'he asked "{state.last_user_question}"')
+            return "; ".join(parts)
 
     def observe_user(self, chat_id: int, text: str, now: float | None = None) -> None:
         now = now if now is not None else time.time()

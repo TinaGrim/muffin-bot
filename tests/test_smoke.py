@@ -19,6 +19,7 @@ from threads import ThreadStore  # noqa: E402
 from life import LifeStore  # noqa: E402
 from mood import MoodStore  # noqa: E402
 from muffin import (  # noqa: E402
+    Chat,
     Memory,
     Muffin,
     clean_reply,
@@ -847,3 +848,76 @@ def test_upset_grudge_triggers_a_nudge_after_an_hour(tmp_path):
     proactive.tick()
 
     assert tg.sent == [(1, "Bong?")]
+
+
+def _tmp_muffin(tmp_path, retriever):
+    config = load_config(
+        {"LLM_BASE_URL": "http://127.0.0.1:1/v1", "LLM_MODEL": "none"},
+        ROOT / "persona.md",
+    )
+    return Muffin(
+        config,
+        retriever,
+        MoodStore(tmp_path / "mood.json"),
+        LifeStore(tmp_path / "life.json"),
+        HistoryStore(tmp_path / "history.json"),
+        ReactionStore(tmp_path / "reactions.json"),
+        ThreadStore(tmp_path / "threads.json"),
+    )
+
+
+def test_fact_store_keeps_durable_context(tmp_path):
+    from facts import FactStore
+
+    store = FactStore(tmp_path / "facts.json")
+    assert store.observe(1, "I have an exam on Friday") is not None
+    assert store.observe(1, "what should I eat?") is None
+    assert store.observe(1, "do you remember my exam?") is None
+    assert store.observe(1, "my mom is sick") is not None
+    lines = store.describe(1, "my exam is tomorrow")
+    assert any("exam on Friday" in line for line in lines)
+
+
+def test_prompt_injects_facts_and_thread(tmp_path, retriever):
+    muffin = _tmp_muffin(tmp_path, retriever)
+    muffin.facts.observe(1, "my exam is on Friday")
+    muffin.threads.observe_user(1, "I have an exam tomorrow")
+    prompt = muffin._system_prompt(
+        "when is my exam",
+        True,
+        muffin.mood.snapshot(1),
+        muffin.life.observe(1),
+        chat_id=1,
+    )
+    assert "exam is on Friday" in prompt
+    assert "topic is exam" in prompt
+
+
+def test_history_budget_and_cleaning(tmp_path, retriever):
+    muffin = _tmp_muffin(tmp_path, retriever)
+    muffin.config.history_messages = 5
+    muffin.config.history_chars = 10_000
+    chat = muffin.chats.setdefault(1, Chat())
+    for index in range(20):
+        muffin._remember(1, chat, f"m{index}", "Ort")
+    history = muffin._history(1)
+    assert len(history) == 5
+    assert history[-1]["content"] == "Ort"
+
+    chat.history.append({"role": "assistant", "content": "Bitch Jg bork oun"})
+    cleaned = muffin._history(1)
+    assert all("Bitch" not in message["content"] for message in cleaned)
+
+    muffin.config.history_chars = 30
+    tiny = muffin._history(1)
+    assert len(tiny) >= 1
+    assert sum(len(m["content"]) for m in tiny) <= 60
+
+
+def test_thread_describe(tmp_path):
+    store = ThreadStore(tmp_path / "threads.json")
+    store.observe_user(1, "I have an exam tomorrow")
+    store.observe_reply(1, "x", "Ort?")
+    text = store.describe(1)
+    assert "exam" in text.lower()
+    assert "you asked" in text
