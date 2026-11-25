@@ -85,59 +85,68 @@ length/style match and whether the reply answers the message.
 
 ## 3B QLoRA on the Mac (M1, 8 GB)
 
-The 0.5B recipe above still works. A 3B 4-bit model fits *only* when the Mac
-has free memory; see the warning below.
+This works, but only with short samples. Long sequences (512+) swap and stall
+on 8 GB. The tested recipe:
 
 ```bash
-# one-time model download
-.venv/bin/python -c "from huggingface_hub import snapshot_download as d; print(d('mlx-community/Qwen2.5-3B-Instruct-4bit'))"
-
-# train (resumes automatically if an adapter exists)
-./fine_tune/train_3b_mac.sh
-
-# longer run
-ITERS=4000 ./fine_tune/train_3b_mac.sh
+.venv/bin/python fine_tune/make_3b_data.py   # data/mlx3_3b, seq-safe samples
+./fine_tune/train_3b_mac.sh                  # 3000 iters, seq 192, batch 1
 ```
 
-Settings: 4-bit base, LoRA rank 8 on 16 layers, batch 1, seq 512,
-gradient checkpointing, lr 5e-5, prompt masked.
+Settings: 4-bit base, LoRA rank 8 on 8 layers, batch 1, seq 192, lr 2e-5,
+gradient checkpointing, prompt masked. 26,012 train / 1,334 valid samples.
 
 Measured on this Mac:
 
 | Run | Result |
 |---|---|
-| 10 iters, seq 512, batch 1 | 2.2 s, loss 12.4 → 5.9 |
-| 3B full run, 8 GB under pressure | ~3 s/iter, swaps hard |
-| 3B after a fresh reboot (expected) | ~0.2–0.5 s/iter |
+| 10 iters, seq 512, batch 1 | 2.2 s, loss 12.4 -> 5.9 |
+| full run, seq 512 | swaps after ~100 iters, ~3 s/iter |
+| full run, seq 192 | **~0.8-1.0 s/iter, stable** |
+| 2,000 iters, seq 192 | 33 min, final val loss **1.25** |
+| +1,000 more iters at lr 1e-4 | loss plateau ~3.5, no real gain |
 
-If the log stalls after the first `val` line and CPU stays near 10%, macOS is
-swapping. Check:
+Sample replies after 3,000 iterations (short prompt, temp 0.8):
 
-```bash
-sysctl vm.swapusage
-vm_stat | grep -E "Pages free|Pages wired"
+```
+Pong tvr ey       -> Oun xa, bong.
+Morning oun       -> Good morning bong
+Nham bay nv?      -> Bay chii, nem tii.
+Bong slnh oun?    -> Oun slnh bong.
 ```
 
-With more than ~4 GB of swap in use, reboot first. The Mac had 7 days of uptime
-and 10 GB of swap when 3B thrashing was observed. Pause the bot and Ollama
-during training:
+The adapter becomes more coherent than the base model, which produced
+`Oun ka oun bong` and `Ooun ñi, bong`, but it has **not** learned Muffin's
+slang. 3,000 single-sample steps are about 11% of one epoch; the train loss
+never fell below ~3.2, so this is underfitting, not a hyperparameter problem.
+
+**Verdict:** 8 GB is enough to *run* the 3B QLoRA job, not enough to train it to
+convergence. A full epoch is ~26,000 steps at 0.8 s/iter, about 6 hours. Use the
+4060 PC for that run (batch 8-16 and CUDA QLoRA, 1.5-3 hours), or accept the
+0.5B adapter on the Mac.
+
+If you still want to continue on the Mac, the adapter resumes automatically.
+Pause the bot and Ollama first so macOS has memory to spare, and keep an eye on
+swap:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.muffin.bot.plist
 brew services stop ollama
+ITERS=6000 ./fine_tune/train_3b_mac.sh
 # after training
 launchctl load ~/Library/LaunchAgents/com.muffin.bot.plist
 brew services start ollama
 ```
 
-Serve the adapter:
+Serve the adapter with the prompt it was trained on:
 
 ```bash
 MODEL=mlx-community/Qwen2.5-3B-Instruct-4bit ADAPTER=adapters/muffin-3b ./serve_mlx.sh
 ```
 
-Then set `LLM_MODEL=Qwen2.5-3B-Instruct-4bit` (the server reports the base name)
-and `ADAPTER_MODE=true` in `.env`.
-
-The 4060 PC is still much faster for the same 3B/7B job: CUDA QLoRA uses 8 GB
-of VRAM instead of fighting macOS for unified memory.
+```dotenv
+LLM_BASE_URL=http://127.0.0.1:8080/v1
+LLM_MODEL=Qwen2.5-3B-Instruct-4bit
+ADAPTER_MODE=true
+COMPACT_PERSONA_FILE=persona_3b.md
+```

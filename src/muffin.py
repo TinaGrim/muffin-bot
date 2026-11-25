@@ -285,6 +285,7 @@ class Config:
     adapter_mode: bool = False
     temperature_override: float | None = None
     persona_path: Path = Path("persona.md")
+    compact_persona_file: str = "persona_compact.md"
 
 
 @dataclass
@@ -728,7 +729,7 @@ class Muffin:
         self.config = config
         self.retriever = retriever
         self.persona = load_persona(config.persona_path)
-        compact = config.persona_path.with_name("persona_compact.md")
+        compact = config.persona_path.with_name(config.compact_persona_file)
         self.compact_persona = (
             compact.read_text(encoding="utf-8").strip()
             if compact.exists()
@@ -1972,6 +1973,7 @@ def load_config(env: dict[str, str], persona_path: Path) -> Config:
         use_intents=env.get("USE_INTENTS", "false").lower() in {"1", "true", "yes"},
         examples_mode=env.get("EXAMPLES_MODE", "always"),
         adapter_mode=env.get("ADAPTER_MODE", "false").lower() in {"1", "true", "yes"},
+        compact_persona_file=env.get("COMPACT_PERSONA_FILE", "persona_compact.md"),
         temperature_override=(
             float(env["LLM_TEMPERATURE_OVERRIDE"])
             if env.get("LLM_TEMPERATURE_OVERRIDE")

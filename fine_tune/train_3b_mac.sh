@@ -7,18 +7,19 @@
 #   MAX_SEQ=256 ./fine_tune/train_3b_mac.sh     # if memory pressure is high
 #
 # Needs: model already downloaded (mlx-community/Qwen2.5-3B-Instruct-4bit)
-# and data in data/mlx3/{train,valid}.jsonl.
+# and data built by fine_tune/make_3b_data.py (data/mlx3_3b).
+# seq 512 swaps on 8 GB; 192 is the tested setting.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 MODEL="${MODEL:-mlx-community/Qwen2.5-3B-Instruct-4bit}"
-DATA="${DATA:-data/mlx3}"
+DATA="${DATA:-data/mlx3_3b}"
 ADAPTER="${ADAPTER:-adapters/muffin-3b}"
-ITERS="${ITERS:-2000}"
-MAX_SEQ="${MAX_SEQ:-512}"
+ITERS="${ITERS:-3000}"
+MAX_SEQ="${MAX_SEQ:-192}"
 BATCH="${BATCH:-1}"
-LAYERS="${LAYERS:-16}"
-LR="${LR:-5e-5}"
+LAYERS="${LAYERS:-8}"
+LR="${LR:-2e-5}"
 
 mkdir -p "$ADAPTER" logs
 

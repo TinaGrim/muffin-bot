@@ -41,6 +41,29 @@ def make_muffin(tmp_path, retriever, corrections=None) -> Muffin:
     )
 
 
+def test_compact_persona_file_is_configurable(tmp_path, retriever):
+    (tmp_path / "persona.md").write_text("main persona")
+    (tmp_path / "short.md").write_text("short persona")
+    config = load_config(
+        {
+            "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+            "LLM_MODEL": "none",
+            "COMPACT_PERSONA_FILE": "short.md",
+        },
+        tmp_path / "persona.md",
+    )
+    muffin = Muffin(
+        config,
+        retriever,
+        MoodStore(tmp_path / "mood.json"),
+        LifeStore(tmp_path / "life.json"),
+        HistoryStore(tmp_path / "history.json"),
+        ReactionStore(tmp_path / "reactions.json"),
+        ThreadStore(tmp_path / "threads.json"),
+    )
+    assert muffin.compact_persona == "short persona"
+
+
 def test_feedback_store_roundtrip(tmp_path):
     store = FeedbackStore(tmp_path, default_training=True)
     record = SentReply(
