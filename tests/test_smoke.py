@@ -931,3 +931,50 @@ def test_context_summary_shows_real_memory(tmp_path, retriever):
     assert "exam" in summary.lower()
     assert "remember" in summary
     assert "No context yet" != summary
+
+
+def test_clean_reply_drops_reasoning_and_foreign_script():
+    assert clean_reply("思考过程：\n- Bong said hi") == ""
+    assert clean_reply("Ort\n思考过程： blah") == "Ort"
+    assert clean_reply("普通 reply") == ""
+    assert clean_reply("Ort") == "Ort"
+
+
+def test_history_drops_leaked_reasoning(tmp_path, retriever):
+    muffin = _tmp_muffin(tmp_path, retriever)
+    chat = muffin.chats.setdefault(1, Chat())
+    chat.history += [
+        {"role": "user", "content": "ah bong plex hrr"},
+        {"role": "assistant", "content": "思考过程：\n- Bong 说 blah"},
+        {"role": "assistant", "content": "Ort"},
+    ]
+    history = muffin._history(1)
+    assert all("思考" not in m["content"] for m in history)
+
+
+def test_proactive_meal_pools():
+    from proactive import BREAKFAST, DINNER, LUNCH, Proactive
+
+    assert Proactive._pool_for_hour(8) is BREAKFAST
+    assert Proactive._pool_for_hour(12) is LUNCH
+    assert Proactive._pool_for_hour(18) is DINNER
+    assert Proactive._pool_for_hour(15) not in (BREAKFAST, LUNCH, DINNER)
+
+
+def test_proactive_backs_off_after_two_unanswered(tmp_path):
+    import time
+
+    from proactive import ChatRegistry
+
+    registry = ChatRegistry(tmp_path / "chats.json", 1.5, 3.0)
+    registry.seed(1)
+    state = registry.chats["1"]
+    state.next_delay = 0.001
+    registry.mark_proactive(1, "Bong?")
+    registry.mark_proactive(1, "Bong?")
+    assert registry.unanswered(1) == 2
+    assert 1 not in registry.due(time.time())
+
+    registry.note_user(1)
+    registry.chats["1"].next_delay = 0.001
+    assert 1 in registry.due(time.time() + 2)

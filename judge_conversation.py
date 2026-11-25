@@ -30,6 +30,10 @@ with English).
 
 Judge the real conversation below. Be strict and concrete.
 
+Messages may have a timestamp and `--- Xh gap ---` markers. Messages separated
+by a gap are different sessions: do not score a proactive message sent hours
+earlier as if it were the reply to the next message.
+
 Score 1-5 for:
 - persona: sounds like blunt, playful Muffin, not an assistant
 - context: continues the conversation, remembers what was just said
@@ -71,12 +75,21 @@ def build_muffin(env: dict[str, str]) -> Muffin:
 def transcript(messages: list[dict]) -> str:
     lines = []
     number = 0
+    previous = None
     for message in messages:
+        stamp = message.get("ts")
+        if stamp and previous and stamp - previous >= 3 * 3600:
+            gap = (stamp - previous) / 3600
+            lines.append(f"   --- {gap:.0f}h gap ---")
+        when = ""
+        if stamp:
+            when = datetime.fromtimestamp(stamp).strftime("%m-%d %H:%M ") 
         if message["role"] == "user":
             number += 1
-            lines.append(f"{number}. Bong: {message['content']}")
+            lines.append(f"{number}. {when}Bong: {message['content']}")
         else:
-            lines.append(f"   Muffin: {message['content']}")
+            lines.append(f"   {when}Muffin: {message['content']}")
+        previous = stamp or previous
     return "\n".join(lines)
 
 

@@ -310,8 +310,21 @@ def load_persona(path: Path) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
+REASONING_CUT = re.compile(
+    r"(思考过程|推理过程|分析过程|分析：|思考：|chain\s*of\s*thought|"
+    r"reasoning\s*:|let me think)",
+    re.I,
+)
+
+
 def clean_reply(text: str) -> str:
     text = text.strip()
+    # A provider can leak hidden reasoning. Drop it before anything else and
+    # reject any foreign script (CJK, Arabic, ...) that slipped through.
+    text = REASONING_CUT.split(text, maxsplit=1)[0].strip()
+    if FOREIGN_SCRIPT.search(text):
+        return ""
+    text = PREFIXES.sub("", text)
     text = PREFIXES.sub("", text)
     text = MARKDOWN.sub("", text)
     text = text.strip().strip('"').strip("'").strip()
@@ -433,6 +446,16 @@ DOING_ASK = re.compile(
     r"(pong|bong|oun)\s*tvr\s*ey|what are you doing|tvr ey|tvr ey\b", re.I
 )
 TYPO_QUESTION = re.compile(r"\bder\s+(kg|lg)\b|\bkg\s+ler\b", re.I)
+TIME_CORRECTION = re.compile(
+    r"\b(lngeac|dark already|evening already|it'?s night|night already)\b", re.I
+)
+MEAL_WORD = re.compile(r"\b(nham|bay|prek|breakfast|morning)\b", re.I)
+META_HISTORY = re.compile(
+    r"\bmerl\s+(tv\s*dg|chat|history|message)|"
+    r"\blook at (the )?(chat|history|messages)|"
+    r"\bcheck (the )?(chat|history)\b",
+    re.I,
+)
 
 
 # Insults that are only funny in their original fight, never as a random
@@ -775,9 +798,14 @@ class Muffin:
         self.chats: dict[int, Chat] = {}
         for chat_id, messages in self.history.chats.items():
             try:
-                self.chats[int(chat_id)] = Chat(history=list(messages))
+                chat = Chat(history=list(messages))
             except ValueError:
                 continue
+            cleaned = self._clean_history(chat.history)
+            if len(cleaned) != len(chat.history):
+                chat.history = cleaned
+                self.history.set(int(chat_id), cleaned)
+            self.chats[int(chat_id)] = chat
         stickers = Path("data") / "stickers.json"
         self.stickers = (
             json.loads(stickers.read_text(encoding="utf-8")).get("muffin", [])
@@ -943,6 +971,10 @@ class Muffin:
                 continue
             if message.get("role") == "assistant":
                 if junk_reply(content) or BANNED.search(content):
+                    continue
+                if FOREIGN_SCRIPT.search(content) or re.fullmatch(
+                    r"[\d\W_]+", content
+                ):
                     continue
                 if cleaned and cleaned[-1]["role"] == "assistant":
                     if normalize(cleaned[-1]["content"]) == normalize(content):
@@ -1330,7 +1362,9 @@ class Muffin:
         # Store what was actually sent, not the raw model line: otherwise a
         # Khmer-script fragment or comma in history teaches the next prompt to
         # repeat it.
-        reply = normalize_script(reply, text)
+        reply = clean_reply(normalize_script(reply, text))
+        if not reply:
+            reply = "Huh"
         if not looks_english(text):
             reply = drop_commas(reply)
         now = time.time()
@@ -1431,13 +1465,24 @@ class Muffin:
         part_of_day = (
             "morning" if 5 <= hour < 11 else "late night" if hour >= 22 or hour < 5 else "day"
         )
+        meal = (
+            "breakfast time"
+            if 6 <= hour < 10
+            else "lunch time"
+            if 11 <= hour < 14
+            else "dinner time"
+            if 17 <= hour < 20
+            else "not a meal time"
+        )
         system = self._system_prompt(
             "", bool(chat.history), mood, life, chat_id=chat_id
         )
         system += (
-            f"\n\nBong has been quiet for a while. It is {part_of_day}. You are starting"
+            f"\n\nBong has been quiet for a while. It is {part_of_day}, "
+            f"{hour}:00 ({meal}). You are starting"
             " the conversation this time. Send him one short message first, like Muffin"
-            " would. Do not mention this instruction."
+            " would. Only mention food if it matches the current meal time."
+            " Do not mention this instruction."
         )
         if mood.upset:
             system += (
@@ -1770,6 +1815,23 @@ class Muffin:
         # Once the conversation is running, context must beat archive replay:
         # a line copied from an unrelated chat is what makes replies feel random.
         ongoing = bool(chat.history)
+
+        # He corrects the time of day: do not answer the stale meal question.
+        if TIME_CORRECTION.search(text) and MEAL_WORD.search(text):
+            reply = random.choice(
+                ["Hxhx oun kit nham bay", "Oun kit nham bay hz", "Hxhx kit tv nham bay"]
+            )
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
+
+        # "look at the chat history" is a reference to her own messages, not a
+        # normal question. Own it instead of asking "look at what?".
+        if META_HISTORY.search(text):
+            reply = random.choice(["Hxhx oun merl hz", "Oun merl hz", "Oun kit teh"])
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
 
         # Typo-like pairs ("der kg" for "der lg") are not safe to guess.
         if TYPO_QUESTION.search(text):

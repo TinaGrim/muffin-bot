@@ -22,7 +22,10 @@ from typing import Any
 log = logging.getLogger("muffin")
 
 MORNING = ["Morning bong", "Bart bong", "Tngaii nih tv na?"]
-DAY = ["Bong tv na?", "Nham bay nv?", "Hoy", "Bong?", "Kit bong"]
+BREAKFAST = ["Nham bay prek nv", "Nham bay nv?", "Nham hz?"]
+LUNCH = ["Nham bay nv?", "Nham ey bong", "Nham hz?"]
+DINNER = ["Nham bay nv?", "Nham hz?", "Nham ey?"]
+DAY = ["Bong tv na?", "Hoy", "Bong?", "Kit bong"]
 NIGHT = ["Bong?", "Kit bong", "Ort reply teh"]
 
 
@@ -33,6 +36,8 @@ class ChatState:
     last_proactive: float = 0.0
     next_delay: float = 0.0
     enabled: bool = True
+    unanswered: int = 0
+    last_text: str = ""
 
 
 class ChatRegistry:
@@ -83,6 +88,7 @@ class ChatRegistry:
             state = self.chats.setdefault(key, ChatState())
             state.last_user = time.time()
             state.next_delay = self._new_delay()
+            state.unanswered = 0
             self._save()
 
     def note_bot(self, chat_id: int) -> None:
@@ -91,12 +97,24 @@ class ChatRegistry:
             state.last_bot = time.time()
             self._save()
 
-    def mark_proactive(self, chat_id: int) -> None:
+    def mark_proactive(self, chat_id: int, text: str = "") -> None:
         with self.lock:
             state = self.chats.setdefault(str(chat_id), ChatState())
+            bot_was_last = state.last_proactive >= state.last_user
+            state.unanswered = state.unanswered + 1 if bot_was_last else 1
             state.last_proactive = time.time()
             state.next_delay = self._new_delay()
+            if text:
+                state.last_text = text.strip()
             self._save()
+
+    def unanswered(self, chat_id: int) -> int:
+        with self.lock:
+            return self.chats.get(str(chat_id), ChatState()).unanswered
+
+    def last_text(self, chat_id: int) -> str:
+        with self.lock:
+            return self.chats.get(str(chat_id), ChatState()).last_text
 
     def set_enabled(self, chat_id: int, enabled: bool) -> None:
         with self.lock:
@@ -125,6 +143,9 @@ class ChatRegistry:
         with self.lock:
             for key, state in self.chats.items():
                 if not state.enabled or state.next_delay <= 0:
+                    continue
+                if state.unanswered >= 2:
+                    # Two texts with no answer: back off instead of spamming.
                     continue
                 idle_since = max(state.last_user, state.last_bot, state.last_proactive)
                 if now - idle_since >= state.next_delay:
@@ -178,13 +199,17 @@ class Proactive(threading.Thread):
                 log.info("ritual chat=%s -> %r", chat_id, message)
                 self.tg.typing(chat_id)
                 self.tg.send(chat_id, message)
-                self.registry.mark_proactive(chat_id)
+                self.registry.mark_proactive(chat_id, message)
                 self.muffin.reactions.note_proactive(chat_id)
         due = set(self.registry.due(now))
         # A grudge needs a nudge sooner than the normal 1.5-3 h cadence.
         for chat_id in self.registry.enabled_chats():
             mood = self.muffin.mood.snapshot(chat_id)
-            if mood.upset and self.registry.idle_for(chat_id, now) >= 3600:
+            if (
+                mood.upset
+                and self.registry.unanswered(chat_id) < 2
+                and self.registry.idle_for(chat_id, now) >= 3600
+            ):
                 due.add(chat_id)
         for chat_id in due:
             self.send(chat_id)
@@ -195,19 +220,33 @@ class Proactive(threading.Thread):
         parts = self.muffin.proactive(chat_id)
         if not parts:
             parts = [self._fallback()]
+        if parts[0].strip() == self.registry.last_text(chat_id):
+            parts[0] = self._fallback_short()
         log.info("proactive chat=%s -> %r", chat_id, " | ".join(parts))
         for i, part in enumerate(parts[:2]):
             if i:
                 time.sleep(random.uniform(1.2, 2.5))
             self.tg.typing(chat_id)
             self.tg.send(chat_id, part)
-        self.registry.mark_proactive(chat_id)
+        self.registry.mark_proactive(chat_id, parts[0] if parts else "")
         self.muffin.reactions.note_proactive(chat_id)
 
+    @staticmethod
+    def _pool_for_hour(hour: int) -> list[str]:
+        if 6 <= hour < 10:
+            return BREAKFAST
+        if 11 <= hour < 14:
+            return LUNCH
+        if 17 <= hour < 20:
+            return DINNER
+        if 5 <= hour < 11:
+            return MORNING
+        if hour >= 22 or hour < 5:
+            return NIGHT
+        return DAY
+
     def _fallback(self) -> str:
-        hour = datetime.now().hour
-        pool = MORNING if 5 <= hour < 11 else NIGHT if (hour >= 22 or hour < 5) else DAY
-        return random.choice(pool)
+        return random.choice(self._pool_for_hour(datetime.now().hour))
 
     def _fallback_short(self) -> str:
         return random.choice(["Bong?", "Hoy", "Ort reply teh", "😭", "Kit bong"])

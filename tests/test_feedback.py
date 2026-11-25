@@ -520,3 +520,32 @@ def test_upset_proactive_is_a_cold_nudge(tmp_path, retriever, monkeypatch):
     monkeypatch.setattr("muffin.random.random", lambda: 0.0)
     parts = muffin.proactive(1)
     assert parts[0] in {"Bong?", "Hoy", "Ort reply teh?", "Kit bong"}
+
+
+def test_leaked_reasoning_never_reaches_history(tmp_path, retriever):
+    class ReasoningLLM:
+        def chat(self, *args, **kwargs):
+            return "思考过程：\n- Bong said something\n- answer in English"
+
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.llm = ReasoningLLM()
+    parts = muffin.reply(1, "tell me something")
+    joined = " ".join(parts)
+    assert "思考" not in joined
+    assert not any("\u4e00" <= ch <= "\u9fff" for ch in joined)
+    stored = " ".join(m["content"] for m in muffin.chats[1].history)
+    assert "思考" not in stored
+
+
+def test_time_correction_and_history_reference(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    assert muffin.reply(1, "Hark lerng lngeac hz mk sur bay prek vinh ?")[0] in {
+        "Hxhx oun kit nham bay",
+        "Oun kit nham bay hz",
+        "Hxhx kit tv nham bay",
+    }
+    assert muffin.reply(1, "jos min merl tv dg hz")[0] in {
+        "Hxhx oun merl hz",
+        "Oun merl hz",
+        "Oun kit teh",
+    }
