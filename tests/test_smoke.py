@@ -150,10 +150,46 @@ def test_mood_moves(tmp_path):
     assert first.affection > 55
     second = store.observe(1, "stupid")
     assert second.patience < first.patience
-    soft = store.observe(1, "i feel lonely today")
+    assert second.mood == "angry"
+    # Sadness does not cancel an insult; the grudge waits for comfort.
+    assert store.observe(1, "i feel lonely today").mood == "angry"
+    soft = store.observe(2, "i feel lonely today")
     assert soft.mood == "soft"
     assert "gentle" in store.describe(soft).lower()
     assert (tmp_path / "mood.json").exists()
+
+
+def test_anger_persists_until_pampered(tmp_path, monkeypatch):
+    import time
+
+    import mood as mood_mod
+
+    store = MoodStore(tmp_path / "mood.json")
+    store.observe(1, "you stupid")
+    assert store.snapshot(1).mood == "angry"
+
+    later = time.time() + 8 * 3600
+    monkeypatch.setattr(mood_mod.time, "time", lambda: later)
+    # Time alone never fixes it.
+    assert store.observe(1, "hello").mood == "angry"
+    # One sorry is not enough for a real insult.
+    halfway = store.observe(1, "sorry bong")
+    assert halfway.mood == "angry"
+    assert halfway.comfort_needed > 0
+    # Real pampering clears the grudge and softens her.
+    cleared = store.observe(1, "bong slnh oun cute")
+    assert cleared.upset == ""
+    assert cleared.mood == "soft"
+
+
+def test_being_ignored_starts_a_grudge(tmp_path):
+    store = ReactionStore(tmp_path / "reactions.json")
+    now = 1_000_000.0
+    store.observe(1, "hi", now=now)
+    store.note_proactive(1, now=now + 3600)
+    reaction = store.observe(1, "hello", now=now + 4 * 3600)
+    assert reaction.ignored
+    assert store.cold_for(reaction) is not None
 
 
 def test_life_activity(tmp_path):
@@ -758,3 +794,56 @@ def test_ongoing_chat_uses_model_not_archive_replay(tmp_path, retriever, monkeyp
     assert calls
     flat = " ".join(message["content"] for message in calls[0])
     assert "hello" in flat and "Bart" in flat
+
+
+def test_upset_grudge_triggers_a_nudge_after_an_hour(tmp_path):
+    import time
+
+    from proactive import ChatRegistry, Proactive
+
+    class FakeMood:
+        upset = "ignored"
+        comfort_needed = 35
+
+    class FakeMoodStore:
+        def snapshot(self, chat_id):
+            return FakeMood()
+
+    class FakeReactions:
+        def proactive(self, chat_id):
+            return None
+
+        def note_proactive(self, chat_id):
+            pass
+
+    class FakeMuffin:
+        mood = FakeMoodStore()
+        reactions = FakeReactions()
+
+        def ritual(self, chat_id):
+            return None
+
+        def proactive(self, chat_id):
+            return ["Bong?"]
+
+    class FakeTG:
+        def __init__(self):
+            self.sent = []
+
+        def typing(self, chat_id):
+            pass
+
+        def send(self, chat_id, text):
+            self.sent.append((chat_id, text))
+
+    registry = ChatRegistry(tmp_path / "chats.json", 1.5, 3.0)
+    registry.seed(1)
+    state = registry.chats["1"]
+    state.last_user = state.last_bot = state.last_proactive = time.time() - 2 * 3600
+
+    tg = FakeTG()
+    proactive = Proactive(tg, FakeMuffin(), registry)
+    proactive._quiet = lambda: False
+    proactive.tick()
+
+    assert tg.sent == [(1, "Bong?")]

@@ -166,3 +166,18 @@ turns + target). On this M1/8 GB the realistic options are:
 
 Keep the retrieval layer after fine-tuning: it supplies facts and recent slang,
 while the adapter supplies the voice.
+
+## Mood and reaching out
+
+Mood is persistent, not per-message. An insult, being ignored for hours, or
+hearing about another girl starts a grudge (`upset` in `data/mood.json`).
+
+- Time alone never clears it; normal chat does not clear it either.
+- An apology chips at it; real pampering (`slnh`, `cute`, `sorry`) clears it
+  and leaves her soft for a while.
+- While the grudge is active, replies stay short and cold, and proactive texts
+  are cold nudges instead of cheerful ones.
+
+Reach-outs run every 1.5-3 hours during 08:00-23:00 (see `PROACTIVE_*` in
+`.env`), with a dedicated nudge after one hour of silence while she is upset.
+Morning and good-night rituals still apply.

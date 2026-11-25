@@ -108,6 +108,18 @@ class ChatRegistry:
         with self.lock:
             return self.chats.get(str(chat_id), ChatState()).enabled
 
+    def idle_for(self, chat_id: int, now: float | None = None) -> float:
+        """Seconds since the last message in either direction."""
+        now = now if now is not None else time.time()
+        with self.lock:
+            state = self.chats.get(str(chat_id))
+            if not state:
+                return 0.0
+            return max(
+                0.0,
+                now - max(state.last_user, state.last_bot, state.last_proactive),
+            )
+
     def due(self, now: float) -> list[int]:
         due = []
         with self.lock:
@@ -168,7 +180,13 @@ class Proactive(threading.Thread):
                 self.tg.send(chat_id, message)
                 self.registry.mark_proactive(chat_id)
                 self.muffin.reactions.note_proactive(chat_id)
-        for chat_id in self.registry.due(now):
+        due = set(self.registry.due(now))
+        # A grudge needs a nudge sooner than the normal 1.5-3 h cadence.
+        for chat_id in self.registry.enabled_chats():
+            mood = self.muffin.mood.snapshot(chat_id)
+            if mood.upset and self.registry.idle_for(chat_id, now) >= 3600:
+                due.add(chat_id)
+        for chat_id in due:
             self.send(chat_id)
 
     def send(self, chat_id: int, force: bool = False) -> None:

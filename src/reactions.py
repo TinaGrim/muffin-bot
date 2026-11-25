@@ -40,6 +40,7 @@ class Reaction:
     greeted: bool = False
     jealous: bool = False
     apology: bool = False
+    ignored: bool = False
 
 
 class ReactionStore:
@@ -81,12 +82,20 @@ class ReactionStore:
             morning = 5 <= dt.hour < 11
             greeting = bool(GREETING.match(text))
             missed = bool(first_today and morning and not greeting)
+            # She texted first and he stayed away for hours: that is a grudge,
+            # not a missed morning. Ignore the very first exchange.
+            ignored = bool(
+                state.last_user_ts > 0
+                and state.last_proactive_ts > state.last_user_ts
+                and now - state.last_proactive_ts >= 2 * 3600
+            )
             reaction = Reaction(
                 first_today=first_today,
                 missed_morning=missed,
                 greeted=greeting and morning,
                 jealous=bool(JEALOUS.search(text)),
                 apology=bool(APOLOGY.search(text)),
+                ignored=ignored,
             )
             state.last_user_date = today
             state.last_user_ts = now
@@ -104,6 +113,8 @@ class ReactionStore:
             return random.choice(["Ng", "Huh", "Ort", "Morning?", "Bong?"])
         if reaction.jealous:
             return random.choice(["Ke ney?", "Srey ng?", "Ort", "Huh", "Mic"])
+        if reaction.ignored:
+            return random.choice(["Hoy", "Bong?", "Ort reply teh?", "Hmm"])
         return None
 
     def note_proactive(self, chat_id: int, now: float | None = None) -> None:

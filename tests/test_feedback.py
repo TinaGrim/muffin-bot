@@ -491,3 +491,32 @@ def test_burst_target_prefers_the_question():
     assert pick_target(["hello", "morning"]) == "morning"
     assert pick_target(["I am home", "what are you doing"]) == "what are you doing"
     assert pick_target(["Morning oun"]) == "Morning oun"
+
+
+def test_grudge_survives_normal_turns(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.reply(1, "you stupid")
+    state = muffin.mood.snapshot(1)
+    assert state.mood == "angry"
+    assert state.comfort_needed >= 40
+
+    # A normal question does not reset the mood.
+    muffin.reply(1, "what are you doing")
+    assert muffin.mood.snapshot(1).mood == "angry"
+
+    # One small sorry is not a full repair.
+    muffin.reply(1, "sorry bong")
+    assert muffin.mood.snapshot(1).mood == "angry"
+
+    # Pampering does clear it.
+    muffin.reply(1, "bong slnh oun cute")
+    assert muffin.mood.snapshot(1).upset == ""
+    assert muffin.mood.snapshot(1).mood == "soft"
+
+
+def test_upset_proactive_is_a_cold_nudge(tmp_path, retriever, monkeypatch):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+    monkeypatch.setattr("muffin.random.random", lambda: 0.0)
+    parts = muffin.proactive(1)
+    assert parts[0] in {"Bong?", "Hoy", "Ort reply teh?", "Kit bong"}

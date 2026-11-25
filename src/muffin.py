@@ -224,6 +224,7 @@ MOOD_STYLE = {
     "tired": (0.7, 16, 70),
     "sleepy": (0.7, 16, 70),
     "annoyed": (0.6, 14, 50),
+    "angry": (0.6, 12, 55),
     "soft": (0.8, 40, 160),
     "neutral": (0.75, 24, 90),
 }
@@ -238,6 +239,15 @@ BURST_PROBS = {
     "tired": (0.75, 0.22, 0.03),
     "sleepy": (0.75, 0.22, 0.03),
     "annoyed": (0.85, 0.15, 0.00),
+    "angry": (0.92, 0.08, 0.00),
+}
+
+# Short cold lines for a grudge. Time passing does not reset these; only an
+# apology or pampering clears the mood.
+UPSET_LINES = {
+    "ignored": ["Hoy", "Bong?", "Ort reply teh?", "Hmm", "Kit bong"],
+    "jealous": ["Ke ney?", "Srey ng?", "Ort", "Huh"],
+    "insulted": ["Ort", "Huh", "Mic", "Kom near oun"],
 }
 
 
@@ -1297,6 +1307,12 @@ class Muffin:
         chat = self.chats.setdefault(chat_id, Chat())
         mood = self.mood.snapshot(chat_id)
         life = self.life.observe(chat_id)
+        # A grudge should sound the same when she texts first: short and cold,
+        # not a cheerful model invention.
+        if mood.upset and random.random() < 0.7:
+            reply = random.choice(["Bong?", "Hoy", "Ort reply teh?", "Kit bong"])
+            self.remember_assistant(chat_id, reply)
+            return [reply]
         hour = datetime.now().hour
         part_of_day = (
             "morning" if 5 <= hour < 11 else "late night" if hour >= 22 or hour < 5 else "day"
@@ -1307,6 +1323,12 @@ class Muffin:
             " the conversation this time. Send him one short message first, like Muffin"
             " would. Do not mention this instruction."
         )
+        if mood.upset:
+            system += (
+                f"\nYou are still angry about being {mood.upset} and he has not "
+                "apologised or pampered you. Send a cold, short, needy message "
+                "(2-5 words). Do not act cute or forgive him."
+            )
         messages = [{"role": "system", "content": system}]
         messages += chat.history[-self.config.history_messages :]
         messages.append({"role": "user", "content": "(send the message)"})
@@ -1562,8 +1584,15 @@ class Muffin:
         life = self.life.observe(chat_id)
         reaction = self.reactions.observe(chat_id, text)
 
+        # A grudge is sticky. Being ignored for hours or hearing about another
+        # girl starts one; only an apology or pampering clears it (mood.py).
+        if reaction.ignored:
+            self.mood.hurt(chat_id, "ignored", 35)
+        if reaction.jealous and not reaction.apology:
+            self.mood.hurt(chat_id, "jealous", 30)
         if reaction.apology:
             self.mood.adjust(chat_id, patience=4, affection=2)
+        mood = self.mood.snapshot(chat_id)
 
         # Bong's explicit recommendation wins over every rule, real chat line
         # and model guess. It is exactly the text he typed.
@@ -1572,6 +1601,28 @@ class Muffin:
             self._remember(chat_id, chat, text, corrected)
             self.mood.after_reply(chat_id)
             return split_messages(corrected, text)
+
+        # While the grudge is active she is cold most of the time, not once.
+        if mood.upset:
+            lines = UPSET_LINES.get(mood.upset, UPSET_LINES["ignored"])
+            last = next(
+                (m["content"] for m in reversed(chat.history) if m["role"] == "assistant"),
+                "",
+            )
+            if random.random() < 0.55:
+                reply = next(
+                    (line for line in lines if normalize(line) != normalize(last)),
+                    lines[0],
+                )
+                log.info(
+                    "angry mood persists after %s (comfort %d): %r",
+                    mood.upset,
+                    mood.comfort_needed,
+                    reply,
+                )
+                self._remember(chat_id, chat, text, reply)
+                self.mood.after_reply(chat_id)
+                return split_messages(reply, text)
 
         # Real data: 22% of skipped mornings get a cold reply, and a long
         # message is a conversation, not a greeting to be punished.

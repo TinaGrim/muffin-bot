@@ -68,8 +68,8 @@ def run_telegram(muffin: Muffin, env: dict[str, str]) -> None:
             offset = None
 
     max_age = int(env.get("MAX_MESSAGE_AGE_SECONDS", 300))
-    min_hours = float(env.get("PROACTIVE_MIN_HOURS", 3))
-    max_hours = float(env.get("PROACTIVE_MAX_HOURS", 6))
+    min_hours = float(env.get("PROACTIVE_MIN_HOURS", 1.5))
+    max_hours = float(env.get("PROACTIVE_MAX_HOURS", 3.0))
     registry = ChatRegistry(ROOT / "data" / "chats.json", min_hours, max_hours)
     allowed_ids = [
         int(x)

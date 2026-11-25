@@ -23,7 +23,13 @@ COMPLIMENT = re.compile(
     re.I,
 )
 INSULT = re.compile(r"\b(stupid|idiot|hate you|shut up|annoying|boring)\b", re.I)
-APOLOGY = re.compile(r"\b(sorry|khos|my bad|apolog)\b", re.I)
+APOLOGY = re.compile(r"\b(sorry|khos|my bad|apolog\w*)\b", re.I)
+PAMPER = re.compile(
+    r"\b(sorry|khos|my bad|apolog\w*|slnh|love you|miss you|cute|handsome|"
+    r"sweet|best|pamper|kom khot|kom jom|oy mun|som|kiss|hug|plov)\b"
+    r"|😘|❤️|🥰|🤗|🙏",
+    re.I,
+)
 SAD = re.compile(r"\b(sad|cry|stress|hurt|tired|hort|depress|lonely|scared)\b", re.I)
 FOOD = re.compile(r"\b(nham bay|nham ey|hungry|eat|food|bay)\b", re.I)
 WORK = re.compile(r"\b(homework|work|class|rean|job|exam|study)\b", re.I)
@@ -38,6 +44,11 @@ HINTS = {
     "sleepy": "It is late and you are sleepy. Short, slightly slow replies. Maybe a yawn.",
     "annoyed": "You are a little annoyed. Be blunt and short. Do not explain why.",
     "soft": "He seems down. Drop the teasing, be gentle, and keep it to one short line.",
+    "angry": (
+        "You are still angry with him and he has not made up for it. Stay cold, "
+        "short and distant. Do not tease, do not act cute, do not forgive. Only "
+        "an apology or real pampering can soften you."
+    ),
     "neutral": "You are calm. Just answer like yourself.",
 }
 
@@ -58,6 +69,9 @@ class Mood:
     last_user: float = 0.0
     last_bot: float = 0.0
     soft_until: float = 0.0
+    upset: str = ""
+    upset_since: float = 0.0
+    comfort_needed: int = 0
     topics: dict[str, float] = field(default_factory=dict)
 
 
@@ -115,9 +129,11 @@ class MoodStore:
             if INSULT.search(low):
                 st.patience = max(0, st.patience - 8)
                 st.affection = max(0, st.affection - 3)
-            if APOLOGY.search(low):
-                st.patience = min(100, st.patience + 5)
-                st.affection = min(100, st.affection + 2)
+                self._hurt(st, "insulted", 45, now)
+            if PAMPER.search(low):
+                self._comfort(st, 30 if APOLOGY.search(low) else 22, now)
+            elif APOLOGY.search(low):
+                self._comfort(st, 30, now)
             if SAD.search(low):
                 st.affection = min(100, st.affection + 4)
                 st.energy = max(0, st.energy - 2)
@@ -132,6 +148,49 @@ class MoodStore:
                 st.topics["sad"] = now
 
             st.last_user = now
+            st.mood = self._pick(st, now)
+            self._save()
+            return replace(st)
+
+    @staticmethod
+    def _hurt(st: Mood, reason: str, amount: int, now: float) -> None:
+        """Start or deepen a grudge; only comfort can clear it."""
+        if not st.upset:
+            st.upset = reason
+            st.upset_since = now
+        st.comfort_needed = min(100, st.comfort_needed + amount)
+
+    @staticmethod
+    def _comfort(st: Mood, amount: int, now: float) -> None:
+        """Apology or pampering chips at the grudge; zero clears it."""
+        if not st.upset:
+            st.patience = min(100, st.patience + 4)
+            st.affection = min(100, st.affection + 2)
+            return
+        st.comfort_needed = max(0, st.comfort_needed - amount)
+        st.patience = min(100, st.patience + 3)
+        st.affection = min(100, st.affection + 2)
+        if st.comfort_needed == 0:
+            st.upset = ""
+            st.upset_since = 0.0
+            st.soft_until = now + 1200
+            st.mood = "soft"
+
+    def hurt(self, chat_id: int, reason: str, amount: int = 30) -> Mood:
+        """External trigger: ignored, jealousy, or an insult."""
+        now = time.time()
+        with self.lock:
+            st = self._get(chat_id)
+            self._hurt(st, reason, amount, now)
+            st.mood = self._pick(st, now)
+            self._save()
+            return replace(st)
+
+    def comforted(self, chat_id: int, amount: int = 30) -> Mood:
+        now = time.time()
+        with self.lock:
+            st = self._get(chat_id)
+            self._comfort(st, amount, now)
             st.mood = self._pick(st, now)
             self._save()
             return replace(st)
@@ -164,12 +223,17 @@ class MoodStore:
         hours = min((now - st.last_user) / 3600, 24)
         if hours > 0.5:
             st.energy = min(100, st.energy + int(hours * 4))
-            st.patience = min(100, st.patience + int(hours * 4))
+            # Time alone does not fix a fight. Patience recovers only when she
+            # is not upset; a grudge waits for an apology or pampering.
+            if not st.upset:
+                st.patience = min(100, st.patience + int(hours * 4))
             st.affection = max(0, st.affection - int(hours * 0.5))
         if 0 <= datetime.now().hour < 6:
             st.energy = max(10, st.energy - 8)
 
     def _pick(self, st: Mood, now: float) -> str:
+        if st.upset and st.comfort_needed > 0:
+            return "angry"
         if now < st.soft_until:
             return "soft"
         if st.energy <= 25:
@@ -191,6 +255,12 @@ class MoodStore:
             HINTS.get(st.mood, HINTS["neutral"]),
             "Show the mood through how you talk; never announce it or mention numbers.",
         ]
+        if st.upset:
+            lines.append(
+                f"You are still upset about being {st.upset}. He has not made up "
+                f"for it yet (comfort {st.comfort_needed}/100 needed). Keep the "
+                "grudge across turns. Do not become warm just because time passed."
+            )
         recent = sorted(
             ((topic, ts) for topic, ts in st.topics.items() if time.time() - ts < 8 * 3600),
             key=lambda kv: kv[1],
