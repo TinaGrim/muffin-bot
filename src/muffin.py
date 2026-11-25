@@ -1356,6 +1356,32 @@ class Muffin:
         self.mood.after_reply(chat_id)
         return text
 
+    def context_summary(self, chat_id: int) -> str:
+        """What the bot actually remembers right now, for /context."""
+        lines: list[str] = []
+        topic = self.threads.describe(chat_id)
+        if topic:
+            lines.append(f"topic: {topic}")
+        facts = self.facts.describe(chat_id)
+        if facts:
+            lines.append("remember:")
+            lines += [fact[2:] if fact.startswith("- ") else fact for fact in facts]
+        history = self._history(chat_id)
+        last_user = next(
+            (m["content"] for m in reversed(history) if m["role"] == "user"), ""
+        )
+        last_bot = next(
+            (m["content"] for m in reversed(history) if m["role"] == "assistant"), ""
+        )
+        if last_user:
+            lines.append(f"last you said: {last_user}")
+        if last_bot:
+            lines.append(f"last she said: {last_bot}")
+        gap = self._last_gap(chat_id)
+        if gap:
+            lines.append(f"quiet for {gap}")
+        return "\n".join(lines) or "No context yet"
+
     def human_delay(self, chat_id: int) -> float:
         state = self.life.observe(chat_id)
         if state.key in {"school", "teach", "meeting", "commute"}:

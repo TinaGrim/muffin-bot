@@ -162,8 +162,12 @@ def run_telegram(muffin: Muffin, env: dict[str, str]) -> None:
                         "/resetmood calms it down, /poke makes it text you first, "
                         "/proactive turns spontaneous texts on or off. "
                         "/train toggles the OK / Bad / Recommend buttons. "
+                        "/context shows what she remembers right now. "
                         "/metrics shows reply latency and fallback rate.",
                     )
+                    continue
+                if text.startswith("/context"):
+                    tg.send(chat["id"], muffin.context_summary(chat["id"]))
                     continue
                 if text.startswith("/train"):
                     on = feedback.toggle_training(chat["id"])

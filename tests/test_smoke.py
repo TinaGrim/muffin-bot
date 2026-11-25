@@ -921,3 +921,13 @@ def test_thread_describe(tmp_path):
     text = store.describe(1)
     assert "exam" in text.lower()
     assert "you asked" in text
+
+
+def test_context_summary_shows_real_memory(tmp_path, retriever):
+    muffin = _tmp_muffin(tmp_path, retriever)
+    muffin.facts.observe(1, "I have an exam on Friday")
+    muffin.threads.observe_user(1, "I have an exam tomorrow")
+    summary = muffin.context_summary(1)
+    assert "exam" in summary.lower()
+    assert "remember" in summary
+    assert "No context yet" != summary
