@@ -150,3 +150,13 @@ LLM_MODEL=Qwen2.5-3B-Instruct-4bit
 ADAPTER_MODE=true
 COMPACT_PERSONA_FILE=persona_3b.md
 ```
+
+## Decision: production stays on Argon (2026-11-25)
+
+The Mac 3B adapter is a research result, not the production brain.
+
+- `.env` keeps `LLM_MODEL=gemini-4-argon` and `ADAPTER_MODE=false`.
+- The adapter stays at `adapters/muffin-3b/` (gitignored) and is never loaded
+  by the running bot.
+- Revisit only after a full-epoch run (2 epochs, batch 8+) on the 4060 PC, with
+  a blind 1-5 comparison against Argon and the 26-turn eval before switching.
