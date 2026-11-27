@@ -184,13 +184,28 @@ def test_anger_persists_until_pampered(tmp_path, monkeypatch):
 
 
 def test_being_ignored_starts_a_grudge(tmp_path):
+    from datetime import datetime
+
     store = ReactionStore(tmp_path / "reactions.json")
-    now = 1_000_000.0
+    now = datetime(2026, 11, 17, 14, 0).timestamp()
     store.observe(1, "hi", now=now)
-    store.note_proactive(1, now=now + 3600)
+    store.note_proactive(1, now=now + 3600, kind="question")
     reaction = store.observe(1, "hello", now=now + 4 * 3600)
     assert reaction.ignored
     assert store.cold_for(reaction) is not None
+
+    # A random "Bong?" is not a direct question, so it does not start a grudge.
+    quiet = ReactionStore(tmp_path / "quiet.json")
+    quiet.observe(1, "hi", now=now)
+    quiet.note_proactive(1, now=now + 3600, kind="other")
+    assert not quiet.observe(1, "hello", now=now + 6 * 3600).ignored
+
+    # School hours are not a grudge window.
+    busy = ReactionStore(tmp_path / "busy.json")
+    morning = datetime(2026, 11, 17, 8, 0).timestamp()
+    busy.observe(1, "hi", now=morning)
+    busy.note_proactive(1, now=morning + 600, kind="greeting")
+    assert not busy.observe(1, "hello", now=morning + 5 * 3600).ignored
 
 
 def test_life_activity(tmp_path):
@@ -814,7 +829,7 @@ def test_upset_grudge_triggers_a_nudge_after_an_hour(tmp_path):
         def proactive(self, chat_id):
             return None
 
-        def note_proactive(self, chat_id):
+        def note_proactive(self, chat_id, **kwargs):
             pass
 
     class FakeMuffin:

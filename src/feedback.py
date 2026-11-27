@@ -171,6 +171,8 @@ class FeedbackStore:
         }
         if extra:
             entry["extra"] = extra
+        if record.corrected:
+            entry["corrected"] = record.corrected
         with self.lock:
             try:
                 self.log_path.parent.mkdir(parents=True, exist_ok=True)

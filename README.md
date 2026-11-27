@@ -198,3 +198,23 @@ The bot now keeps three layers of context, not just the last message:
    question Bong asked, plus how long the chat has been quiet.
 
 `/reset` clears history, facts and thread state for the chat.
+
+## Mood repair and reach-out limits
+
+Being ignored is still a grudge, but it is no longer a trap:
+
+- A grudge starts only when a **direct question or greeting** was left unanswered
+  for **3 hours**, outside school (07-11) and teaching (17-21) hours. A random
+  `Bong?` does not start one.
+- Asking why she is cold (`Hoy ey oun`, `mix ban hoy`) makes her say what is
+  wrong in one line. An apology or real pampering clears the grudge; coming back,
+  explaining, or asking about her chips at it.
+- She may be cold, but at most two cold one-word replies in a row. The third
+  explains the grievance and asks for repair.
+- Proactive cadence is 3-5 hours plus morning/goodnight, about 5-6 reach-outs a
+  day. At most two can go unanswered, and only one empty `Bong?` / `Hoy` is
+  allowed per day.
+
+`judge_conversation.py` now runs three reviews by default, labels proactive and
+note-corrected turns, and includes the persona rules in the prompt. A note you
+asked for is no longer scored as a bot failure.

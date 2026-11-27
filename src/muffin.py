@@ -16,7 +16,7 @@ import httpx
 
 from history import HistoryStore
 from life import Activity, LifeStore
-from mood import Mood, MoodStore
+from mood import Mood, MoodStore, WHY_COLD
 from reactions import Reaction, ReactionStore
 from retrieval import Retriever, normalize
 from threads import ThreadStore
@@ -246,10 +246,29 @@ BURST_PROBS = {
 # Short cold lines for a grudge. Time passing does not reset these; only an
 # apology or pampering clears the mood.
 UPSET_LINES = {
-    "ignored": ["Hoy", "Bong?", "Ort reply teh?", "Hmm", "Kit bong"],
+    "ignored": [
+        "Ort",
+        "Hmm",
+        "Ort mean ey",
+        "Kit bong",
+        "Bong ort reply oun",
+        "Ort kit oun teh?",
+    ],
     "jealous": ["Ke ney?", "Srey ng?", "Ort", "Huh"],
     "insulted": ["Ort", "Huh", "Mic", "Kom near oun"],
 }
+
+# After two cold one-word replies she has to say what is actually wrong. A
+# human girlfriend does not repeat "Hoy" forever.
+EXPLAIN_LINES = [
+    "Bong ort reply oun",
+    "Bong tv na?",
+    "Ort kit oun teh?",
+    "Bong slnh oun teh?",
+]
+COLD_LINE = re.compile(
+    r"^(hoy|bong\?|hmm|kit bong|ort reply teh\?|ort|ng)\s*[.!?]*$", re.I
+)
 
 
 def trim_repeats(text: str, keep: int = 3) -> str:
@@ -982,6 +1001,10 @@ class Muffin:
             item = {"role": message.get("role"), "content": content}
             if message.get("ts"):
                 item["ts"] = message["ts"]
+            if message.get("kind"):
+                item["kind"] = message["kind"]
+            if message.get("note"):
+                item["note"] = message["note"]
             cleaned.append(item)
         return cleaned
 
@@ -1358,7 +1381,14 @@ class Muffin:
         self.history.reset(chat_id)
         self.facts.reset(chat_id)
 
-    def _remember(self, chat_id: int, chat: Chat, text: str, reply: str) -> None:
+    def _remember(
+        self,
+        chat_id: int,
+        chat: Chat,
+        text: str,
+        reply: str,
+        kind: str = "reply",
+    ) -> None:
         # Store what was actually sent, not the raw model line: otherwise a
         # Khmer-script fragment or comma in history teaches the next prompt to
         # repeat it.
@@ -1370,20 +1400,60 @@ class Muffin:
         now = time.time()
         chat.history += [
             {"role": "user", "content": text, "ts": now},
-            {"role": "assistant", "content": reply, "ts": now},
+            {"role": "assistant", "content": reply, "ts": now, "kind": kind},
         ]
         self._trim(chat)
         self.history.set(chat_id, chat.history)
+
+    @staticmethod
+    def _cold_reply(text: str, last: str, fallback: list[str]) -> str:
+        """Stay cold, but react to what he actually said."""
+        low = text.lower()
+        if re.search(r"\b(rvol|mok|back|home)\b", low):
+            options = ["Rvol hz?", "Nham bay nv?", "Ort mean ey"]
+        elif re.search(r"\bjorb\b", low):
+            options = ["Jorb hz?", "Rean tv jg", "Ort mean ey"]
+        elif re.search(r"\b(rean|school|class|study|exam)\b", low):
+            options = ["Rean tv jg", "Jorb hz?", "Ort mean ey"]
+        elif re.search(r"\b(nham|bay|eat|hungry)\b", low):
+            options = ["Nham hz?", "Nham ey?", "Ort mean ey"]
+        elif text.strip().endswith("?") or re.search(
+            r"\b(ey|mic|mix|tv na)\b", low
+        ):
+            options = ["Ort mean ey", "Hmm", "Ort"]
+        else:
+            options = ["Hmm", "Ort", "Kit bong"]
+        if not options:
+            options = fallback
+        return next(
+            (line for line in options if normalize(line) != normalize(last)),
+            options[0],
+        )
+
+    @staticmethod
+    def _cold_streak(chat: Chat) -> int:
+        """How many cold one-word replies she just sent in a row."""
+        streak = 0
+        for message in reversed(chat.history):
+            if message.get("role") != "assistant":
+                continue
+            if COLD_LINE.match((message.get("content") or "").strip()):
+                streak += 1
+            else:
+                break
+        return streak
 
     def _trim(self, chat: Chat) -> None:
         limit = max(2 * self.config.history_messages, self.config.history_keep)
         if len(chat.history) > limit:
             chat.history = chat.history[-limit:]
 
-    def remember_assistant(self, chat_id: int, text: str) -> str:
+    def remember_assistant(
+        self, chat_id: int, text: str, kind: str = "proactive"
+    ) -> str:
         chat = self.chats.setdefault(chat_id, Chat())
         chat.history.append(
-            {"role": "assistant", "content": text, "ts": time.time()}
+            {"role": "assistant", "content": text, "ts": time.time(), "kind": kind}
         )
         self._trim(chat)
         self.history.set(chat_id, chat.history)
@@ -1393,6 +1463,14 @@ class Muffin:
     def context_summary(self, chat_id: int) -> str:
         """What the bot actually remembers right now, for /context."""
         lines: list[str] = []
+        mood = self.mood.snapshot(chat_id)
+        if mood.upset:
+            lines.append(
+                f"mood: {mood.mood} because {mood.upset}; "
+                f"needs {mood.comfort_needed}/100 comfort"
+            )
+        else:
+            lines.append(f"mood: {mood.mood}")
         topic = self.threads.describe(chat_id)
         if topic:
             lines.append(f"topic: {topic}")
@@ -1444,7 +1522,7 @@ class Muffin:
     def ritual(self, chat_id: int) -> str | None:
         message = self.reactions.proactive(chat_id)
         if message:
-            self.remember_assistant(chat_id, message)
+            self.remember_assistant(chat_id, message, kind="ritual")
         return message
 
     def proactive(self, chat_id: int) -> list[str]:
@@ -1457,9 +1535,14 @@ class Muffin:
         life = self.life.observe(chat_id)
         # A grudge should sound the same when she texts first: short and cold,
         # not a cheerful model invention.
-        if mood.upset and random.random() < 0.7:
-            reply = random.choice(["Bong?", "Hoy", "Ort reply teh?", "Kit bong"])
-            self.remember_assistant(chat_id, reply)
+        if mood.upset and random.random() < 0.5:
+            pool = (
+                EXPLAIN_LINES
+                if self._cold_streak(chat) >= 2 or random.random() < 0.5
+                else ["Bong?", "Ort reply teh?", "Hmm", "Bong tv na?"]
+            )
+            reply = random.choice(pool)
+            self.remember_assistant(chat_id, reply, kind="proactive")
             return [reply]
         hour = datetime.now().hour
         part_of_day = (
@@ -1491,7 +1574,7 @@ class Muffin:
                 "(2-5 words). Do not act cute or forgive him."
             )
         messages = [{"role": "system", "content": system}]
-        messages += chat.history[-self.config.history_messages :]
+        messages += self._history(chat_id)
         messages.append({"role": "user", "content": "(send the message)"})
 
         max_tokens = (
@@ -1529,7 +1612,7 @@ class Muffin:
             or self.life.conflicts(life, reply)
         ):
             reply = self.life.fallback(life)
-        self.remember_assistant(chat_id, reply)
+        self.remember_assistant(chat_id, reply, kind="proactive")
         return split_messages(reply, "", mood.mood, generated=True)[:2]
 
     def _code_reply(self, chat_id: int, text: str, life: Activity) -> list[str]:
@@ -1732,12 +1815,17 @@ class Muffin:
         chat.history = [dict(message) for message in history]
         self.history.set(chat_id, chat.history)
 
-    def apply_correction(self, chat_id: int, corrected: str) -> None:
+    def apply_correction(
+        self, chat_id: int, corrected: str, note: str = ""
+    ) -> None:
         """Put Bong's recommended reply where the wrong answer was in history."""
         chat = self.chats.setdefault(chat_id, Chat())
         for index in range(len(chat.history) - 1, -1, -1):
             if chat.history[index]["role"] == "assistant":
                 chat.history[index]["content"] = corrected
+                chat.history[index]["kind"] = "note"
+                if note:
+                    chat.history[index]["note"] = note
                 break
         self.history.set(chat_id, chat.history)
 
@@ -1765,18 +1853,43 @@ class Muffin:
             self.mood.after_reply(chat_id)
             return split_messages(corrected, text)
 
-        # While the grudge is active she is cold most of the time, not once.
+        # He asks why she is cold. That is a repair attempt, not a normal
+        # question: say what is wrong and ask for what she wants.
+        if mood.upset and WHY_COLD.search(text):
+            last = next(
+                (m["content"] for m in reversed(chat.history) if m["role"] == "assistant"),
+                "",
+            )
+            reply = next(
+                (line for line in EXPLAIN_LINES if normalize(line) != normalize(last)),
+                EXPLAIN_LINES[0],
+            )
+            self.mood.comforted(chat_id, 5)
+            log.info("grudge explained after why-question: %r", reply)
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
+
+        # While the grudge is active she is cold sometimes, not every turn.
         if mood.upset:
             lines = UPSET_LINES.get(mood.upset, UPSET_LINES["ignored"])
             last = next(
                 (m["content"] for m in reversed(chat.history) if m["role"] == "assistant"),
                 "",
             )
-            if random.random() < 0.55:
-                reply = next(
-                    (line for line in lines if normalize(line) != normalize(last)),
-                    lines[0],
-                )
+            if random.random() < 0.30:
+                streak = self._cold_streak(chat)
+                if streak >= 2:
+                    reply = next(
+                        (
+                            line
+                            for line in EXPLAIN_LINES
+                            if normalize(line) != normalize(last)
+                        ),
+                        EXPLAIN_LINES[0],
+                    )
+                else:
+                    reply = self._cold_reply(text, last, lines)
                 log.info(
                     "angry mood persists after %s (comfort %d): %r",
                     mood.upset,
@@ -1803,7 +1916,9 @@ class Muffin:
         elif reaction.jealous and random.random() < 0.25:
             cold = self.reactions.cold_for(reaction)
         if cold:
-            self.mood.adjust(chat_id, patience=-8, affection=-3)
+            # Do not drain affection on every cold line: that is what kept
+            # the grudge alive for a whole day.
+            self.mood.adjust(chat_id, patience=-2)
             self._remember(chat_id, chat, text, cold)
             self.mood.after_reply(chat_id)
             return split_messages(cold, text)

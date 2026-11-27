@@ -411,7 +411,7 @@ class ChatWorker(threading.Thread):
             else ""
         )
         if last == record.reply:
-            self.muffin.apply_correction(self.chat_id, answer)
+            self.muffin.apply_correction(self.chat_id, answer, note=note)
 
         old_ids = list(record.message_ids)
         if not old_ids and record.message_id:

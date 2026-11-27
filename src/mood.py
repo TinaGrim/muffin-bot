@@ -30,6 +30,16 @@ PAMPER = re.compile(
     r"|😘|❤️|🥰|🤗|🙏",
     re.I,
 )
+REPAIR = re.compile(
+    r"\b(kit bong|miss bong|miss oun|bong tv na|tv na bong|bong nham|bong dek|"
+    r"bong rean|busy|meeting|phone|charge|late|ort reply|ot reply)\b",
+    re.I,
+)
+WHY_COLD = re.compile(
+    r"\b(hoy ey|ey hoy|(mic|mix)\s+ban(\s+hoy)?|hoy mic|mic hoy|"
+    r"why (are )?(you )?(like this|cold|angry)|why hoy)\b",
+    re.I,
+)
 SAD = re.compile(r"\b(sad|cry|stress|hurt|tired|hort|depress|lonely|scared)\b", re.I)
 FOOD = re.compile(r"\b(nham bay|nham ey|hungry|eat|food|bay)\b", re.I)
 WORK = re.compile(r"\b(homework|work|class|rean|job|exam|study)\b", re.I)
@@ -87,11 +97,18 @@ class MoodStore:
             return
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
+            repaired = False
             for chat_id, raw in data.get("chats", {}).items():
                 known = {f for f in Mood.__dataclass_fields__}
-                self.chats[str(chat_id)] = Mood(
-                    **{k: v for k, v in raw.items() if k in known}
-                )
+                mood = Mood(**{k: v for k, v in raw.items() if k in known})
+                # Repair the old death spiral: a grudge should not drain every
+                # good feeling to zero and keep her cold forever.
+                if mood.upset and mood.affection < 20:
+                    mood.affection = 20
+                    repaired = True
+                self.chats[str(chat_id)] = mood
+            if repaired:
+                self._save()
         except (ValueError, TypeError):
             self.chats = {}
 
@@ -130,10 +147,18 @@ class MoodStore:
                 st.patience = max(0, st.patience - 8)
                 st.affection = max(0, st.affection - 3)
                 self._hurt(st, "insulted", 45, now)
+            if WHY_COLD.search(low):
+                # Asking why she is cold is a repair attempt: answer it and
+                # let the grudge ease a little.
+                self._comfort(st, 5, now)
             if PAMPER.search(low):
                 self._comfort(st, 30 if APOLOGY.search(low) else 22, now)
             elif APOLOGY.search(low):
                 self._comfort(st, 30, now)
+            elif REPAIR.search(low):
+                # He came back, explained himself, or asked about her. That is
+                # not full pampering, but it is not nothing either.
+                self._comfort(st, 7, now)
             if SAD.search(low):
                 st.affection = min(100, st.affection + 4)
                 st.energy = max(0, st.energy - 2)
@@ -158,6 +183,9 @@ class MoodStore:
         if not st.upset:
             st.upset = reason
             st.upset_since = now
+        # Do not let one fight drain every good feeling; otherwise the cold
+        # replies keep her cold forever.
+        st.affection = max(st.affection, 20)
         st.comfort_needed = min(100, st.comfort_needed + amount)
 
     @staticmethod
@@ -227,7 +255,7 @@ class MoodStore:
             # is not upset; a grudge waits for an apology or pampering.
             if not st.upset:
                 st.patience = min(100, st.patience + int(hours * 4))
-            st.affection = max(0, st.affection - int(hours * 0.5))
+                st.affection = max(0, st.affection - int(hours * 0.5))
         if 0 <= datetime.now().hour < 6:
             st.energy = max(10, st.energy - 8)
 

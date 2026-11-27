@@ -21,6 +21,12 @@ APOLOGY = re.compile(r"\b(sorry|khos|my bad)\b", re.I)
 GOODNIGHT = re.compile(r"\b(good\s*night|gn|dek hz)\b", re.I)
 
 
+def _busy_hour(ts: float) -> bool:
+    """School (07-11) and teaching (17-21) are not good grudge windows."""
+    hour = datetime.fromtimestamp(ts).hour
+    return 7 <= hour < 11 or 17 <= hour < 21
+
+
 @dataclass
 class ReactionState:
     last_user_date: str = ""
@@ -31,6 +37,7 @@ class ReactionState:
     last_user_ts: float = 0.0
     last_proactive_ts: float = 0.0
     ignored_followup_ts: float = 0.0
+    last_proactive_kind: str = ""
 
 
 @dataclass
@@ -87,7 +94,13 @@ class ReactionStore:
             ignored = bool(
                 state.last_user_ts > 0
                 and state.last_proactive_ts > state.last_user_ts
-                and now - state.last_proactive_ts >= 2 * 3600
+                # Only a direct question or a greeting expects an answer. A
+                # random "Bong?" is not worth a 24-hour grudge.
+                and state.last_proactive_kind in {"question", "greeting"}
+                and now - state.last_proactive_ts >= 3 * 3600
+                # She texts during school and teaching too; being busy then is
+                # not the same as ignoring her.
+                and not _busy_hour(state.last_proactive_ts)
             )
             reaction = Reaction(
                 first_today=first_today,
@@ -100,6 +113,7 @@ class ReactionStore:
             state.last_user_date = today
             state.last_user_ts = now
             state.ignored_followup_ts = 0.0
+            state.last_proactive_kind = ""
             if reaction.greeted:
                 state.morning_greeted = today
             if GOODNIGHT.search(text):
@@ -114,13 +128,21 @@ class ReactionStore:
         if reaction.jealous:
             return random.choice(["Ke ney?", "Srey ng?", "Ort", "Huh", "Mic"])
         if reaction.ignored:
-            return random.choice(["Hoy", "Bong?", "Ort reply teh?", "Hmm"])
+            return random.choice(
+                ["Hoy", "Bong?", "Ort reply teh?", "Hmm", "Bong ort reply oun"]
+            )
         return None
 
-    def note_proactive(self, chat_id: int, now: float | None = None) -> None:
+    def note_proactive(
+        self,
+        chat_id: int,
+        now: float | None = None,
+        kind: str = "other",
+    ) -> None:
         with self.lock:
             state = self._get(chat_id)
             state.last_proactive_ts = now if now is not None else time.time()
+            state.last_proactive_kind = kind
             self._save()
 
     def proactive(self, chat_id: int, now: float | None = None) -> str | None:

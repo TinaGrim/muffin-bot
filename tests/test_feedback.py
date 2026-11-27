@@ -519,7 +519,16 @@ def test_upset_proactive_is_a_cold_nudge(tmp_path, retriever, monkeypatch):
     muffin.mood.hurt(1, "ignored", 35)
     monkeypatch.setattr("muffin.random.random", lambda: 0.0)
     parts = muffin.proactive(1)
-    assert parts[0] in {"Bong?", "Hoy", "Ort reply teh?", "Kit bong"}
+    assert parts[0] in {
+        "Bong?",
+        "Hmm",
+        "Ort reply teh?",
+        "Kit bong",
+        "Bong ort reply oun",
+        "Bong tv na?",
+        "Ort kit oun teh?",
+        "Bong slnh oun teh?",
+    }
 
 
 def test_leaked_reasoning_never_reaches_history(tmp_path, retriever):
