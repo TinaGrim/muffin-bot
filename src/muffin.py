@@ -20,6 +20,7 @@ from mood import Mood, MoodStore, WHY_COLD
 from reactions import Reaction, ReactionStore
 from retrieval import Retriever, normalize
 from threads import ThreadStore
+from turn import ACT_CALLOUT, ACT_META, classify, claim_allows_wake
 from facts import FactStore
 from feedback import Corrections
 from rules import intent_reply, override_reply
@@ -465,16 +466,7 @@ DOING_ASK = re.compile(
     r"(pong|bong|oun)\s*tvr\s*ey|what are you doing|tvr ey|tvr ey\b", re.I
 )
 TYPO_QUESTION = re.compile(r"\bder\s+(kg|lg)\b|\bkg\s+ler\b", re.I)
-TIME_CORRECTION = re.compile(
-    r"\b(lngeac|dark already|evening already|it'?s night|night already)\b", re.I
-)
 MEAL_WORD = re.compile(r"\b(nham|bay|prek|breakfast|morning)\b", re.I)
-META_HISTORY = re.compile(
-    r"\bmerl\s+(tv\s*dg|chat|history|message)|"
-    r"\blook at (the )?(chat|history|messages)|"
-    r"\bcheck (the )?(chat|history)\b",
-    re.I,
-)
 
 
 # Insults that are only funny in their original fight, never as a random
@@ -1422,7 +1414,9 @@ class Muffin:
         ):
             options = ["Ort mean ey", "Hmm", "Ort"]
         else:
-            options = ["Hmm", "Ort", "Kit bong"]
+            # A statement is not a yes/no question. Even while cold, react to
+            # what he said instead of answering "Ort" to a sentence.
+            options = ["Ohh", "Hxhx", "Hmm", "Jah"]
         if not options:
             options = fallback
         return next(
@@ -1834,6 +1828,7 @@ class Muffin:
         mood = self.mood.observe(chat_id, text)
         life = self.life.observe(chat_id)
         reaction = self.reactions.observe(chat_id, text)
+        turn = classify(text)
 
         # A grudge is sticky. Being ignored for hours or hearing about another
         # girl starts one; only an apology or pampering clears it (mood.py).
@@ -1900,6 +1895,38 @@ class Muffin:
                 self.mood.after_reply(chat_id)
                 return split_messages(reply, text)
 
+        # A "Dek hz" / "Good night" is a commitment. Do not answer "are you
+        # awake?" with "Ngerb hx" ten minutes later; hold it until morning
+        # gives her a real reason to be up.
+        claim, claim_ts = self.threads.bot_claim(chat_id)
+        asks_her_state = (
+            turn.refers_to("sleep")
+            or AWAKE_QUESTION.match(text)
+            or SLEEP_QUESTION.search(text)
+            or DOING_QUESTION.search(text)
+        )
+        if (
+            claim == "sleep"
+            and asks_her_state
+            and not claim_allows_wake(claim, claim_ts)
+        ):
+            last = next(
+                (m["content"] for m in reversed(chat.history) if m["role"] == "assistant"),
+                "",
+            )
+            reply = next(
+                (
+                    line
+                    for line in ("Dek nv", "Ngerb ot rouch teh", "Ngerb ot rouch")
+                    if normalize(line) != normalize(last)
+                ),
+                "Dek nv",
+            )
+            log.info("holding sleep claim against %r: %r", text, reply)
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
+
         # Real data: 22% of skipped mornings get a cold reply, and a long
         # message is a conversation, not a greeting to be punished.
         substantive = len(text.split()) >= 7
@@ -1931,22 +1958,42 @@ class Muffin:
         # a line copied from an unrelated chat is what makes replies feel random.
         ongoing = bool(chat.history)
 
-        # He corrects the time of day: do not answer the stale meal question.
-        if TIME_CORRECTION.search(text) and MEAL_WORD.search(text):
-            reply = random.choice(
-                ["Hxhx oun kit nham bay", "Oun kit nham bay hz", "Hxhx kit tv nham bay"]
-            )
-            self._remember(chat_id, chat, text, reply)
-            self.mood.after_reply(chat_id)
-            return split_messages(reply, text)
-
-        # "look at the chat history" is a reference to her own messages, not a
-        # normal question. Own it instead of asking "look at what?".
-        if META_HISTORY.search(text):
+        # He points at her own messages ("look at the chat"). That is a
+        # reference to the conversation, not a normal question.
+        if turn.act == ACT_META:
             reply = random.choice(["Hxhx oun merl hz", "Oun merl hz", "Oun kit teh"])
             self._remember(chat_id, chat, text, reply)
             self.mood.after_reply(chat_id)
             return split_messages(reply, text)
+
+        # He corrects the time of day: do not answer the stale meal greeting.
+        # Other corrections ("you said...") get acknowledged instead of being
+        # treated as a fresh unrelated question.
+        if turn.act == ACT_CALLOUT:
+            if turn.refers_to("time") and (
+                turn.refers_to("food") or MEAL_WORD.search(text)
+            ):
+                reply = random.choice(
+                    [
+                        "Hxhx oun kit nham bay",
+                        "Oun kit nham bay hz",
+                        "Hxhx kit tv nham bay",
+                    ]
+                )
+            elif turn.refers_to("time") and turn.refers_to("sleep"):
+                reply = random.choice(["Hxhx dek hz", "Oun kit dek hz", "Dek hz"])
+            elif turn.refers_to("bot_claim") and not THOUGHT_AT.search(text):
+                reply = random.choice(["Hxhx kit bong", "Oun kit teh", "Hxhx oun kit"])
+            elif turn.refers_to("time"):
+                # A time correction without food context still deserves an
+                # acknowledgement, not a random activity line.
+                reply = random.choice(["Hxhx oun kit", "Oun kit teh", "Hxhx"])
+            else:
+                reply = ""
+            if reply:
+                self._remember(chat_id, chat, text, reply)
+                self.mood.after_reply(chat_id)
+                return split_messages(reply, text)
 
         # Typo-like pairs ("der kg" for "der lg") are not safe to guess.
         if TYPO_QUESTION.search(text):

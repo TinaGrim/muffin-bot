@@ -15,13 +15,23 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT))
 
 from history import HistoryStore  # noqa: E402
+from life import Activity as LifeActivity  # noqa: E402
 from life import LifeStore  # noqa: E402
 from mood import MoodStore  # noqa: E402
 from muffin import Chat, EXPLAIN_LINES, Muffin, load_config  # noqa: E402
 from proactive import ChatRegistry, Proactive  # noqa: E402
 from reactions import ReactionStore  # noqa: E402
 from retrieval import CachedRetriever  # noqa: E402
-from threads import ThreadStore  # noqa: E402
+from threads import ThreadState, ThreadStore  # noqa: E402
+from turn import (  # noqa: E402
+    ACT_ANSWER,
+    ACT_CALLOUT,
+    ACT_GREETING,
+    ACT_META,
+    ACT_QUESTION,
+    classify,
+    claim_allows_wake,
+)
 
 
 @pytest.fixture(scope="session")
@@ -182,3 +192,116 @@ def test_grudge_needs_a_direct_question_and_three_hours(tmp_path):
     store.observe(1, "hi", now=start + 3 * 3600)
     store.note_proactive(1, now=start + 4 * 3600, kind="question")
     assert store.observe(1, "hello", now=start + 7 * 3600).ignored
+
+
+def test_turn_classification_keeps_vocatives_and_references():
+    assert classify("Bart").act == ACT_GREETING
+    assert classify("Ort").act == ACT_ANSWER
+    assert classify("Ngerb nv").act == ACT_QUESTION
+
+    study = classify("Bart ort rean ey phg")
+    assert study.act == ACT_QUESTION
+    assert study.refers_to("school")
+    assert study.has_vocative
+
+    meta = classify("jos min merl tv dg hz")
+    assert meta.act == ACT_META
+
+    correction = classify("Hark lerng lngeac hz")
+    assert correction.act == ACT_CALLOUT
+    assert correction.refers_to("time")
+
+
+def test_sleep_claim_holds_until_morning():
+    bed = datetime(2026, 11, 27, 22, 0)
+
+    assert not claim_allows_wake("sleep", bed.timestamp(), datetime(2026, 11, 27, 22, 10))
+    assert not claim_allows_wake("sleep", bed.timestamp(), datetime(2026, 11, 28, 3, 0))
+    assert claim_allows_wake("sleep", bed.timestamp(), datetime(2026, 11, 28, 7, 30))
+    assert claim_allows_wake("awake", bed.timestamp(), datetime(2026, 11, 27, 22, 10))
+
+
+def test_going_to_sleep_is_not_reversed_ten_minutes_later(
+    tmp_path, retriever, monkeypatch
+):
+    import turn
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 27, 22, 10)
+
+    monkeypatch.setattr(turn, "datetime", FrozenDatetime)
+
+    muffin = make_muffin(tmp_path, retriever)
+    night = FrozenDatetime.now()
+    muffin.threads.chats["1"] = ThreadState(
+        last_bot_claim="sleep", last_bot_claim_ts=night.timestamp()
+    )
+    now = night.timestamp()
+    muffin.life.chats["1"] = LifeActivity(key="night", started=now, ends=now + 3600)
+
+    parts = muffin.reply(1, "Ngerb nv bong? Men ngerb ot teh?")
+    assert parts[0] in {"Dek nv", "Ngerb ot rouch teh", "Ngerb ot rouch"}
+
+    # The judge's 22:00 failure: "Lov pov nguy nv" is about being sleepy.
+    assert classify("Lov pov nguy nv").refers_to("sleep")
+    parts = muffin.reply(1, "Lov pov nguy nv")
+    assert parts[0] in {"Dek nv", "Ngerb ot rouch teh", "Ngerb ot rouch"}
+
+
+def test_ordinary_statement_gets_a_reaction_even_when_cold(
+    tmp_path, retriever, monkeypatch
+):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+    monkeypatch.setattr("muffin.random.random", lambda: 0.0)
+
+    parts = muffin.reply(1, "oun ngerb hx lu 7-8")
+
+    assert parts[0] in {"Ohh", "Hxhx", "Hmm", "Jah"}
+    assert parts[0] not in {"Ort", "Ot", "No"}
+
+
+def test_study_question_with_a_vocative_gets_a_study_answer(
+    tmp_path, retriever
+):
+    muffin = make_muffin(tmp_path, retriever)
+    now = datetime.now().timestamp()
+    muffin.life.chats["1"] = LifeActivity(key="chill", started=now, ends=now + 3600)
+
+    parts = muffin.reply(1, "Bart ort rean ey phg")
+
+    assert parts[0] in {"Tvr lomhat nv", "Pg tvr ka", "Tvr lomhat hx"}
+
+
+def test_only_real_goodnight_lines_create_a_sleep_claim():
+    from threads import claim_from_reply
+
+    assert claim_from_reply("Dek hz") == "sleep"
+    assert claim_from_reply("Pg dek hz") == "sleep"
+    assert claim_from_reply("Good night") == "sleep"
+    # Lying down to scroll TikTok is not a promise to be asleep.
+    assert claim_from_reply("Pg dek merl tiktok") == ""
+    assert claim_from_reply("Dek hz?") == ""
+    assert claim_from_reply("Dek hz\nBong?") == "sleep"
+
+
+def test_context_shows_the_commitment_she_made(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    now = datetime.now().timestamp()
+    muffin.threads.chats["1"] = ThreadState(
+        last_bot_claim="sleep", last_bot_claim_ts=now
+    )
+
+    summary = muffin.context_summary(1)
+
+    assert "going to sleep" in summary
+
+
+def test_time_callout_without_food_still_gets_an_answer(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+
+    parts = muffin.reply(1, "Lngeac hz")
+
+    assert parts[0] in {"Hxhx oun kit", "Oun kit teh", "Hxhx"}

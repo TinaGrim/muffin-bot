@@ -6,7 +6,7 @@ import json
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from storage import atomic_write_text
@@ -36,6 +36,35 @@ def infer_topic(text: str) -> str:
     return ""
 
 
+# A claim is something she said about herself that the next turns must not
+# silently contradict (going to sleep, being awake, being at school).
+CLAIMS = (
+    ("sleep", re.compile(
+        r"\b(?:pg\s+)?dek\s+(?:hz|nv|tv)\b|\bgood\s*night\b|"
+        r"\babout\s+to\s+sleep\b|\bin\s+bed\b",
+        re.I,
+    )),
+    ("awake", re.compile(r"\b(ngerb\s+hx|ngerb\s+yu\s+hx|i'?m\s+up|awake)\b", re.I)),
+    ("studying", re.compile(
+        r"\b(rean\s+nv|at\s+school|in\s+class|nv\s+sala|nv\s+pteas)\b", re.I
+    )),
+    ("not_studying", re.compile(r"\b(tvr\s+lomhat|pg\s+tvr\s+ka)\b", re.I)),
+    ("home", re.compile(r"\b(nv\s+home|at\s+home)\b", re.I)),
+)
+
+
+def claim_from_reply(reply: str) -> str:
+    """The last self-claim she made in a statement, ignoring her questions."""
+    lines = [line.strip() for line in (reply or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.endswith("?"):
+            continue
+        for name, pattern in CLAIMS:
+            if pattern.search(line):
+                return name
+    return ""
+
+
 @dataclass
 class ThreadState:
     topic: str = ""
@@ -44,6 +73,10 @@ class ThreadState:
     pending_ts: float = 0.0
     last_user_question: str = ""
     last_user_question_ts: float = 0.0
+    last_bot_claim: str = ""
+    last_bot_claim_ts: float = 0.0
+    recent_questions: list[str] = field(default_factory=list)
+    recent_question_ts: list[float] = field(default_factory=list)
 
 
 class ThreadStore:
@@ -60,9 +93,12 @@ class ThreadStore:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             known = set(ThreadState.__dataclass_fields__)
             for chat_id, raw in data.get("chats", {}).items():
-                self.chats[str(chat_id)] = ThreadState(
+                state = ThreadState(
                     **{k: v for k, v in raw.items() if k in known}
                 )
+                if len(state.recent_question_ts) != len(state.recent_questions):
+                    state.recent_question_ts = [0.0] * len(state.recent_questions)
+                self.chats[str(chat_id)] = state
         except (ValueError, TypeError):
             self.chats = {}
 
@@ -81,6 +117,16 @@ class ThreadStore:
         with self.lock:
             state = self._get(chat_id)
             parts: list[str] = []
+            claim = state.last_bot_claim
+            if claim and now - state.last_bot_claim_ts <= 8 * 3600:
+                said = {
+                    "sleep": "you said you were going to sleep",
+                    "awake": "you said you were awake",
+                    "studying": "you said you were studying",
+                    "not_studying": "you said you were not studying",
+                    "home": "you said you were at home",
+                }.get(claim, f"you said you were {claim}")
+                parts.append(said)
             if state.topic:
                 parts.append(f"the topic is {state.topic}")
             if state.pending_question and now - state.pending_ts <= 1800:
@@ -90,6 +136,14 @@ class ThreadStore:
                 and now - state.last_user_question_ts <= 3600
             ):
                 parts.append(f'he asked "{state.last_user_question}"')
+            elif (
+                state.recent_questions
+                and len(state.recent_question_ts) == len(state.recent_questions)
+                and now - state.recent_question_ts[-1] <= 3600
+            ):
+                parts.append(
+                    f'you already asked "{state.recent_questions[-1]}" — do not repeat it'
+                )
             return "; ".join(parts)
 
     def observe_user(self, chat_id: int, text: str, now: float | None = None) -> None:
@@ -103,6 +157,12 @@ class ThreadStore:
                 state.last_user_question = text
                 state.last_user_question_ts = now
             self._save()
+
+    def bot_claim(self, chat_id: int) -> tuple[str, float]:
+        """What she last said about herself, and when she said it."""
+        with self.lock:
+            state = self._get(chat_id)
+            return state.last_bot_claim, state.last_bot_claim_ts
 
     def pending_for_answer(self, chat_id: int, text: str, now: float | None = None) -> str | None:
         now = now if now is not None else time.time()
@@ -123,10 +183,20 @@ class ThreadStore:
         now = now if now is not None else time.time()
         with self.lock:
             state = self._get(chat_id)
+            claim = claim_from_reply(reply)
+            if claim:
+                state.last_bot_claim = claim
+                state.last_bot_claim_ts = now
             if reply.rstrip().endswith("?"):
-                state.pending_question = reply.strip()
+                question = reply.strip()
+                state.pending_question = question
                 state.pending_topic = infer_topic(user_text) or state.topic
                 state.pending_ts = now
+                if question not in state.recent_questions:
+                    state.recent_questions.append(question)
+                    state.recent_question_ts.append(now)
+                    del state.recent_questions[:-3]
+                    del state.recent_question_ts[:-3]
             elif (YES.match(user_text) or NO.match(user_text)) and state.pending_question:
                 state.pending_question = ""
                 state.pending_topic = ""

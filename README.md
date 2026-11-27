@@ -194,8 +194,24 @@ The bot now keeps three layers of context, not just the last message:
    exams, school, work, plans, family, health and preferences. Only explicit
    statements are stored; questions are never turned into facts. The prompt
    gets the five most relevant lines, not the whole list.
-3. **Thread state** - current topic, the question she asked last, and the last
-   question Bong asked, plus how long the chat has been quiet.
+3. **Thread state** - current topic, the question she asked last, the last
+   question Bong asked, the last thing she promised about herself, and how long
+   the chat has been quiet.
+
+## Turn understanding and commitments
+
+`src/turn.py` classifies each message once, before any reply rule runs, as a
+question, statement, callout, meta reference, greeting, command, tease or
+answer. It also records what the message points at (sleep, food, school, the
+chat itself, her previous claim), so `lngeac hz` and `merl tv dg` are handled
+as corrections and references instead of being mistaken for fresh questions.
+
+The thread store now remembers her last self-claim. After `Dek hz` or
+`Good night`, she stays in bed through the night: asking `Ngerb nv?` or
+`Lov pov nguy nv` gets a sleepy answer, not `Ngerb hx`. Morning is the natural
+reason to be awake again, so the claim expires there. A plain statement also
+gets a reaction (`Ohh`, `Hxhx`, `Hmm`) even while she is cold, instead of a
+bare `Ort` to a sentence.
 
 `/reset` clears history, facts and thread state for the chat.
 
