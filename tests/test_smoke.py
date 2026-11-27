@@ -947,6 +947,11 @@ def test_context_summary_shows_real_memory(tmp_path, retriever):
     assert "remember" in summary
     assert "No context yet" != summary
 
+    muffin.mood.hurt(1, "ignored", 35)
+    grudge = muffin.context_summary(1)
+    assert "angry" in grudge
+    assert "needs" in grudge
+
 
 def test_clean_reply_drops_reasoning_and_foreign_script():
     assert clean_reply("思考过程：\n- Bong said hi") == ""
