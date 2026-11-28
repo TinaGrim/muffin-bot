@@ -47,6 +47,7 @@ class ChatState:
     generic_count: int = 0
     sent_day: str = ""
     sent_today: list[str] = field(default_factory=list)
+    sent_timestamps: dict[str, float] = field(default_factory=dict)
 
 
 class ChatRegistry:
@@ -113,7 +114,8 @@ class ChatRegistry:
             state = self.chats.setdefault(str(chat_id), ChatState())
             bot_was_last = state.last_proactive >= state.last_user
             state.unanswered = state.unanswered + 1 if bot_was_last else 1
-            state.last_proactive = time.time()
+            now = time.time()
+            state.last_proactive = now
             state.next_delay = self._new_delay()
             clean = text.strip()
             if clean:
@@ -130,10 +132,13 @@ class ChatRegistry:
             if state.sent_day != today:
                 state.sent_day = today
                 state.sent_today = []
+                state.sent_timestamps = {}
             key = self._key(clean)
             if key and key not in state.sent_today:
                 state.sent_today.append(key)
                 del state.sent_today[:-20]
+            if key:
+                state.sent_timestamps[key] = now
             self._save()
 
     @staticmethod
@@ -319,14 +324,33 @@ class Proactive(threading.Thread):
         return DAY
 
     def _pick_fresh(self, chat_id: int, pool: list[str]) -> str:
-        """Prefer a line that has not gone out today."""
-        fresh = [
-            line
-            for line in pool
-            if not self.registry.already_sent(chat_id, line)
-            and line.strip() != self.registry.last_text(chat_id)
-        ]
-        return random.choice(fresh or pool or ["Bong tv na?"])
+        """Prefer a line that has not gone out today, or was sent longest ago."""
+        with self.registry.lock:
+            state = self.registry.chats.get(str(chat_id), ChatState())
+        now = time.time()
+        today = datetime.now().date().isoformat()
+
+        scored: list[tuple[float, str]] = []
+        for line in pool:
+            key = self.registry._key(line)
+            if key and state.sent_day == today and key in state.sent_timestamps:
+                age = now - state.sent_timestamps[key]
+                # Prefer older lines (higher score = older)
+                score = age / 3600.0  # hours since sent
+            else:
+                # Never sent today = highest score
+                score = 999.0
+            # Small penalty if it matches last_text exactly
+            if line.strip() == state.last_text:
+                score -= 10.0
+            scored.append((score, line))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        # Pick from top 3 with weighted random
+        top = scored[:3]
+        weights = [max(0.1, s) for s, _ in top]
+        lines = [l for _, l in top]
+        return random.choices(lines, weights=weights, k=1)[0] if lines else random.choice(pool or ["Bong tv na?"])
 
     def _fallback(self, chat_id: int | None = None) -> str:
         pool = self._pool_for_hour(datetime.now().hour)

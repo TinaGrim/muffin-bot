@@ -1429,7 +1429,10 @@ class Muffin:
         elif re.search(r"\b(nham|bay|eat|hungry)\b", low):
             # A food question still needs an answer. "Nham hz?" turns her
             # answer into a confused question of her own.
-            if re.search(r"\b(ban|mean)\s+ey\b|\bwhat\b", low):
+            # Compound question: "ban ey nham bay nv" = what + whether
+            if re.search(r"\b(ban|mean)\s+ey\b.*\b(nham|bay)\b|\b(nham|bay)\b.*\b(ban|mean)\s+ey\b|\bwhat\b.*\b(eat|ate)\b", low):
+                options = ["Nham bay muy chicken", "Bay cha", "Nham eggs"]
+            elif re.search(r"\b(ban|mean)\s+ey\b|\bwhat\b", low):
                 options = ["Nham bay muy chicken", "Bay cha", "Nham eggs"]
             else:
                 options = ["Nham tv", "Ot nham teh", "Nham"]
@@ -1896,6 +1899,39 @@ class Muffin:
             self.mood.after_reply(chat_id)
             return split_messages(reply, text)
 
+        # A "Dek hz" / "Good night" is a commitment. Do not answer "are you
+        # awake?" with "Ngerb hx" ten minutes later; hold it until morning
+        # gives her a real reason to be up. This applies even when upset.
+        claim, claim_ts = self.threads.bot_claim(chat_id)
+        asks_her_state = (
+            turn.refers_to("sleep")
+            or turn.refers_to("sleep_probe")
+            or AWAKE_QUESTION.match(text)
+            or SLEEP_QUESTION.search(text)
+            or DOING_QUESTION.search(text)
+        )
+        if (
+            claim == "sleep"
+            and asks_her_state
+            and not claim_allows_wake(claim, claim_ts)
+        ):
+            last = next(
+                (m["content"] for m in reversed(chat.history) if m["role"] == "assistant"),
+                "",
+            )
+            reply = next(
+                (
+                    line
+                    for line in ("Dek nv", "Ngerb ot rouch teh", "Ngerb ot rouch")
+                    if normalize(line) != normalize(last)
+                ),
+                "Dek nv",
+            )
+            log.info("holding sleep claim against %r: %r", text, reply)
+            self._remember(chat_id, chat, text, reply)
+            self.mood.after_reply(chat_id)
+            return split_messages(reply, text)
+
         # While the grudge is active she is cold sometimes, not every turn.
         if mood.upset:
             lines = UPSET_LINES.get(mood.upset, UPSET_LINES["ignored"])
@@ -1925,38 +1961,6 @@ class Muffin:
                 self._remember(chat_id, chat, text, reply)
                 self.mood.after_reply(chat_id)
                 return split_messages(reply, text)
-
-        # A "Dek hz" / "Good night" is a commitment. Do not answer "are you
-        # awake?" with "Ngerb hx" ten minutes later; hold it until morning
-        # gives her a real reason to be up.
-        claim, claim_ts = self.threads.bot_claim(chat_id)
-        asks_her_state = (
-            turn.refers_to("sleep")
-            or AWAKE_QUESTION.match(text)
-            or SLEEP_QUESTION.search(text)
-            or DOING_QUESTION.search(text)
-        )
-        if (
-            claim == "sleep"
-            and asks_her_state
-            and not claim_allows_wake(claim, claim_ts)
-        ):
-            last = next(
-                (m["content"] for m in reversed(chat.history) if m["role"] == "assistant"),
-                "",
-            )
-            reply = next(
-                (
-                    line
-                    for line in ("Dek nv", "Ngerb ot rouch teh", "Ngerb ot rouch")
-                    if normalize(line) != normalize(last)
-                ),
-                "Dek nv",
-            )
-            log.info("holding sleep claim against %r: %r", text, reply)
-            self._remember(chat_id, chat, text, reply)
-            self.mood.after_reply(chat_id)
-            return split_messages(reply, text)
 
         # Real data: 22% of skipped mornings get a cold reply, and a long
         # message is a conversation, not a greeting to be punished.

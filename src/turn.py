@@ -72,6 +72,11 @@ AWAKE_ASK = re.compile(
     r"\bngerb\s+(?:nv|has|ha|haii|men|ban|yu|ruc|ort|ot|teh|jos|ng|pov|ah|la|der|lg)\b",
     re.I,
 )
+# "Lov pov nguy nv" / "Pong tvr ey" asking state while she claimed sleep.
+STATE_PROBE = re.compile(
+    r"\b(lov\s+pov\s+nguy|pong\s+tvr\s+ey|merl\s+tv\s+dg)\b",
+    re.I,
+)
 TEASE = re.compile(
     r"\b(stupid|idiot|boring|annoying|dumb|ugly|hate\s+you|bitch)\b", re.I
 )
@@ -132,6 +137,8 @@ def _references(text: str) -> tuple[str, ...]:
             refs.append(name)
     if TIME_WORDS.search(text):
         refs.append("time")
+    if STATE_PROBE.search(text):
+        refs.append("sleep_probe")
     return tuple(refs)
 
 
@@ -152,6 +159,8 @@ def classify(text: str) -> Turn:
     elif NOTHING.match(low):
         act = ACT_STATEMENT
     elif TIME_WORDS.search(low) or ATTENTION.match(low):
+        act = ACT_CALLOUT
+    elif STATE_PROBE.search(low):
         act = ACT_CALLOUT
     elif CORRECTION.search(low):
         act = ACT_CALLOUT
