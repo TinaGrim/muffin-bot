@@ -1128,7 +1128,7 @@ class Muffin:
                     max_tokens=tokens,
                     session_id=session_id,
                     stop=None if local else [],
-                    timeout=min(remaining, 4.0 if local else 6.0),
+                    timeout=min(remaining, 12.0 if local else 6.0),
                 )
             except Exception as exc:  # noqa: BLE001 - try the next provider
                 log.warning("fallback %s failed: %s", llm.config.model, exc)
