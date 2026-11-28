@@ -1346,6 +1346,7 @@ class Muffin:
     ) -> str:
         """Never invent a reply. Prefer the closest real chat response."""
         chat = self.chats.setdefault(chat_id, Chat())
+        mood = self.mood.snapshot(chat_id)
         remembered = self.memory.lookup(text, last_assistant, max_len=160)
         if (
             remembered
@@ -1353,6 +1354,7 @@ class Muffin:
             and not junk_reply(remembered)
             and not re.fullmatch(r"[\d\W_]+", remembered)
             and not self.life.conflicts(life, remembered)
+            and not self.mood_problems(mood.mood, remembered)
         ):
             log.info("safe fallback from real chat: %r", remembered)
             return self._dedupe(chat_id, chat, remembered)
@@ -1375,6 +1377,7 @@ class Muffin:
                     or re.fullmatch(r"[\d\W_]+", reply)
                     or len(reply) > 160
                     or self.life.conflicts(life, reply)
+                    or self.mood_problems(mood.mood, reply)
                 ):
                     continue
                 log.info("safe fallback from retrieval: %r", reply)

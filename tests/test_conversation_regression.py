@@ -376,3 +376,61 @@ def test_judge_html_escapes_the_transcript():
     assert "&lt;b&gt;hi&lt;/b&gt;" in page
     assert "fix &lt;x&gt;" in page
     assert 'class="note"' in page
+
+
+def test_mood_guard_rejects_romantic_reply_while_angry(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+
+    issues = muffin.mood_problems(
+        "angry", "Bong ha Can we kiss Like a hard and burning kisses"
+    )
+
+    assert "mood:affectionate_while_angry" in issues
+    assert "mood:romantic_while_angry" in issues
+
+
+def test_soft_mood_rejects_cold_reply(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+
+    assert muffin.mood_problems("soft", "Ort") == ["mood:cold_while_soft"]
+    assert muffin.mood_problems("soft", "Morning bong") == []
+
+
+def test_safe_fallback_skips_romantic_archive_line_while_angry(
+    tmp_path, retriever, monkeypatch
+):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+    monkeypatch.setattr(muffin.memory, "lookup", lambda *a, **k: None)
+    monkeypatch.setattr(
+        muffin.retriever,
+        "search",
+        lambda *a, **k: [
+            {
+                "score": 0.9,
+                "user": "baby ha",
+                "reply": "Bong ha Can we kiss Like a hard and burning kisses",
+            },
+            {"score": 0.8, "user": "bong tv na", "reply": "Ort mean ey"},
+        ],
+    )
+
+    reply = muffin._safe_fallback(1, "baby ha", "", muffin.life.observe(1))
+
+    assert "kiss" not in reply.lower()
+    assert reply == "Ort mean ey"
+
+
+def test_one_pamper_clears_a_small_remaining_grudge(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+    muffin.mood.comforted(1, 22)
+    assert muffin.mood.snapshot(1).comfort_needed == 13
+
+    muffin.mood.observe(1, "baby ha mk bong pamper tic nas")
+
+    state = muffin.mood.snapshot(1)
+    assert state.comfort_needed == 0
+    assert state.upset == ""
+    assert state.mood == "soft"
