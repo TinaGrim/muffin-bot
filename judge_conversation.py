@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -205,6 +206,130 @@ def average_runs(runs: list[dict]) -> dict:
     return base
 
 
+def review_rows(messages: list[dict]) -> list[dict]:
+    """Group the transcript by Bong's turn, with every Muffin line that followed."""
+    rows: list[dict] = []
+    current: dict | None = None
+    number = 0
+    for message in messages:
+        if message["role"] == "user":
+            number += 1
+            current = {"n": number, "user": message["content"], "bot": []}
+            rows.append(current)
+        elif current is not None:
+            current["bot"].append(message["content"])
+    return rows
+
+
+def render_html(data: dict, messages: list[dict]) -> str:
+    """A review sheet with one note box per turn, saved in localStorage."""
+    issues = {int(item.get("n", 0)): item for item in data.get("turns") or []}
+    rows = []
+    for row in review_rows(messages):
+        issue = issues.get(row["n"], {})
+        rows.append(
+            {
+                "n": row["n"],
+                "user": row["user"],
+                "bot": "\n".join(row["bot"]),
+                "score": issue.get("score", ""),
+                "issue": issue.get("issue", ""),
+            }
+        )
+    body = []
+    for row in rows:
+        body.append(
+            f'<tr data-turn="{row["n"]}">'
+            f'<td class="n">{row["n"]}</td>'
+            f'<td class="q">{html.escape(row["user"])}</td>'
+            f'<td class="a">{html.escape(row["bot"])}</td>'
+            f'<td class="s">{html.escape(str(row["score"]))}</td>'
+            f'<td class="issue">{html.escape(row["issue"])}</td>'
+            f'<td><input class="note" type="text" placeholder="your note"></td>'
+            "</tr>"
+        )
+    fixes = "".join(
+        f'<li><label><input type="checkbox"> {html.escape(fix)}</label></li>'
+        for fix in data.get("top_fixes") or []
+    )
+    summary = html.escape(data.get("summary", ""))
+    scores = "".join(
+        f"<div><b>{html.escape(str(data.get(key, '')))}</b>{label}</div>"
+        for key, label in (
+            ("overall", "overall /10"),
+            ("persona", "persona /5"),
+            ("context", "context /5"),
+            ("style", "style /5"),
+            ("relevance", "relevance /5"),
+            ("reach_out", "reach-out /5"),
+        )
+    )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width initial-scale=1">
+<title>Muffin conversation review</title>
+<style>
+ :root {{ --ink:#1c1c1e; --muted:#6b6b70; --line:#e3e3e8; --warn:#fff8e6; }}
+ * {{ box-sizing:border-box; }}
+ body {{ margin:0; padding:28px 20px 80px; font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color:var(--ink); background:#fafafc; }}
+ main {{ max-width:1180px; margin:0 auto; }}
+ h1 {{ font-size:26px; margin:0 0 6px; }}
+ h2 {{ font-size:17px; margin:24px 0 8px; }}
+ .sub {{ color:var(--muted); margin:0 0 16px; }}
+ .scores {{ display:flex; gap:20px; flex-wrap:wrap; margin:0 0 18px; font-size:12px; color:var(--muted); }}
+ .scores b {{ display:block; color:var(--ink); font-size:18px; }}
+ .bar {{ position:sticky; top:0; z-index:5; background:#fafafc; padding:10px 0; border-bottom:1px solid var(--line); margin-bottom:16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }}
+ .bar button {{ font:inherit; font-size:13px; padding:5px 10px; border:1px solid var(--line); border-radius:7px; background:#fff; cursor:pointer; }}
+ table {{ width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+ th {{ text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); padding:9px 10px; border-bottom:1px solid var(--line); background:#f4f4f7; }}
+ td {{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }}
+ tr:last-child td {{ border-bottom:0; }}
+ tr.bad td {{ background:var(--warn); }}
+ .n {{ width:34px; color:var(--muted); }}
+ .q {{ width:22%; font-weight:500; }}
+ .a {{ width:24%; white-space:pre-wrap; }}
+ .s {{ width:52px; text-align:center; }}
+ .issue {{ width:28%; color:#6b3b00; }}
+ .note {{ width:100%; border:0; border-bottom:1px dashed var(--line); padding:4px 2px; font:inherit; font-size:13px; background:transparent; }}
+ .note:focus {{ outline:none; border-bottom-color:#888; }}
+ ul {{ background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 18px 12px 28px; }}
+ li {{ margin:4px 0; }}
+ li input {{ margin-right:6px; }}
+ @media print {{ body {{ background:#fff; padding:0; }} .bar {{ display:none; }} tr.bad td {{ background:#f4f4f4; }} }}
+</style></head><body><main>
+<h1>Muffin conversation review</h1>
+<p class="sub">Each row is one of Bong's turns and what Muffin actually sent. Tick the fixes, write the line she should have sent, then copy your notes back into the chat.</p>
+<div class="scores">{scores}</div>
+<p>{summary}</p>
+<div class="bar">
+ <button onclick="window.print()">Print / save PDF</button>
+ <button onclick="copyNotes()">Copy my notes</button>
+ <button onclick="clearNotes()">Clear notes</button>
+</div>
+<table><thead><tr><th>#</th><th>Bong</th><th>Muffin</th><th>Score</th><th>Judge issue</th><th>Your note</th></tr></thead>
+<tbody>{''.join(body)}</tbody></table>
+<h2>Top fixes</h2>
+<ul>{fixes or '<li>No fixes returned.</li>'}</ul>
+</main>
+<script>
+const rows=[...document.querySelectorAll('tbody tr')];
+rows.forEach(tr=>{{
+ const n=tr.dataset.turn, box=tr.querySelector('.note'), score=parseInt(tr.querySelector('.s').textContent||'5',10);
+ if(score<=2) tr.classList.add('bad');
+ const key='muffin-judge-'+n;
+ box.value=localStorage.getItem(key)||'';
+ box.oninput=()=>localStorage.setItem(key,box.value);
+}});
+function copyNotes(){{
+ const out=rows.map(tr=>({{turn:tr.dataset.turn,bong:tr.querySelector('.q').textContent,muffin:tr.querySelector('.a').textContent,note:tr.querySelector('.note').value}})).filter(x=>x.note);
+ navigator.clipboard.writeText(JSON.stringify(out,null,1)).then(()=>alert('Copied '+out.length+' notes'));
+}}
+function clearNotes(){{ rows.forEach(tr=>{{ tr.querySelector('.note').value=''; localStorage.removeItem('muffin-judge-'+tr.dataset.turn); }}); }}
+</script>
+</body></html>
+"""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--chat", type=int, default=1725557743)
@@ -267,8 +392,13 @@ def main() -> None:
     (ROOT / "data" / "CONVERSATION_JUDGE.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
     )
+    review_html = ROOT / "data" / "CONVERSATION_JUDGE.html"
+    review_html.write_text(
+        render_html(data, messages), encoding="utf-8"
+    )
     print("\n".join(lines[:14]))
     print(f"\nwrote {report}")
+    print(f"wrote {review_html}")
 
 
 if __name__ == "__main__":

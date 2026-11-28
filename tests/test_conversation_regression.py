@@ -354,3 +354,25 @@ def test_no_grudge_text_after_she_brushed_him_off(tmp_path, retriever):
 
     assert parts[0] in {"Bong tv na?", "Hmm", "Hoy"}
     assert parts[0] != "Bong ort reply oun"
+
+
+def test_judge_html_escapes_the_transcript():
+    from judge_conversation import render_html
+
+    data = {
+        "overall": 5,
+        "summary": "summary",
+        "turns": [{"n": 1, "score": 2, "issue": "bad"}],
+        "top_fixes": ["fix <x>"],
+    }
+    messages = [
+        {"role": "user", "content": "<b>hi</b>"},
+        {"role": "assistant", "content": "Ort"},
+    ]
+
+    page = render_html(data, messages)
+
+    assert "<b>hi</b>" not in page
+    assert "&lt;b&gt;hi&lt;/b&gt;" in page
+    assert "fix &lt;x&gt;" in page
+    assert 'class="note"' in page
