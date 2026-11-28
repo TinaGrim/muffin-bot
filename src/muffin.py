@@ -467,6 +467,13 @@ DOING_ASK = re.compile(
 )
 TYPO_QUESTION = re.compile(r"\bder\s+(kg|lg)\b|\bkg\s+ler\b", re.I)
 MEAL_WORD = re.compile(r"\b(nham|bay|prek|breakfast|morning)\b", re.I)
+# Lines that end the exchange by sending him away. Complaining "you did not
+# reply" right after this is what made the reach-out feel unfair.
+BRUSH_OFF = re.compile(
+    r"^(?:rvol|rean|tv|jenh)\s+tv(?:\s+jg)?$|^tv\s+rean(?:\s+tv)?$|"
+    r"^ort\s+mean\s+ey$",
+    re.I,
+)
 
 
 # Insults that are only funny in their original fight, never as a random
@@ -1398,17 +1405,34 @@ class Muffin:
         self.history.set(chat_id, chat.history)
 
     @staticmethod
+    def _last_bot_line(chat: Chat) -> str:
+        """The last thing she actually sent, without earlier burst lines."""
+        for message in reversed(chat.history):
+            if message.get("role") == "assistant":
+                text = message.get("content") or ""
+                return re.split(r"\s*\|\s*|\n", text)[-1].strip()
+        return ""
+
+    @staticmethod
     def _cold_reply(text: str, last: str, fallback: list[str]) -> str:
         """Stay cold, but react to what he actually said."""
         low = text.lower()
-        if re.search(r"\b(rvol|mok|back|home)\b", low):
+        if re.match(r"^\s*(morning|hi|hello|hey|bart)\b", low):
+            # Even a cold morning gets a morning back, not a flat "Ohh".
+            options = ["Morning", "Morning bong", "Ngob"]
+        elif re.search(r"\b(rvol|mok|back|home)\b", low):
             options = ["Rvol hz?", "Nham bay nv?", "Ort mean ey"]
         elif re.search(r"\bjorb\b", low):
             options = ["Jorb hz?", "Rean tv jg", "Ort mean ey"]
         elif re.search(r"\b(rean|school|class|study|exam)\b", low):
             options = ["Rean tv jg", "Jorb hz?", "Ort mean ey"]
         elif re.search(r"\b(nham|bay|eat|hungry)\b", low):
-            options = ["Nham hz?", "Nham ey?", "Ort mean ey"]
+            # A food question still needs an answer. "Nham hz?" turns her
+            # answer into a confused question of her own.
+            if re.search(r"\b(ban|mean)\s+ey\b|\bwhat\b", low):
+                options = ["Nham bay muy chicken", "Bay cha", "Nham eggs"]
+            else:
+                options = ["Nham tv", "Ot nham teh", "Nham"]
         elif text.strip().endswith("?") or re.search(
             r"\b(ey|mic|mix|tv na)\b", low
         ):
@@ -1527,8 +1551,15 @@ class Muffin:
         chat = self.chats.setdefault(chat_id, Chat())
         mood = self.mood.snapshot(chat_id)
         life = self.life.observe(chat_id)
+        brush_off = bool(BRUSH_OFF.match(self._last_bot_line(chat)))
         # A grudge should sound the same when she texts first: short and cold,
         # not a cheerful model invention.
+        if mood.upset and brush_off:
+            # She told him to go study or go be busy. She can still miss him,
+            # but she cannot accuse him of ignoring her.
+            reply = random.choice(["Bong tv na?", "Hmm", "Hoy"])
+            self.remember_assistant(chat_id, reply, kind="proactive")
+            return [reply]
         if mood.upset and random.random() < 0.5:
             pool = (
                 EXPLAIN_LINES

@@ -305,3 +305,52 @@ def test_time_callout_without_food_still_gets_an_answer(tmp_path, retriever):
     parts = muffin.reply(1, "Lngeac hz")
 
     assert parts[0] in {"Hxhx oun kit", "Oun kit teh", "Hxhx"}
+
+
+def test_cold_food_question_gets_a_real_answer(tmp_path, retriever, monkeypatch):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+    monkeypatch.setattr("muffin.random.random", lambda: 0.0)
+
+    parts = muffin.reply(1, "ban ey nham bay nv jos")
+
+    assert parts[0] in {"Nham bay muy chicken", "Bay cha", "Nham eggs"}
+    assert "?" not in parts[0]
+
+
+def test_cold_morning_greeting_says_morning_back(
+    tmp_path, retriever, monkeypatch
+):
+    muffin = make_muffin(tmp_path, retriever)
+    muffin.mood.hurt(1, "ignored", 35)
+    monkeypatch.setattr("muffin.random.random", lambda: 0.0)
+
+    parts = muffin.reply(1, "morning")
+
+    assert parts[0] in {"Morning", "Morning bong", "Ngob"}
+
+
+def test_reach_out_dedupe_ignores_punctuation(tmp_path):
+    registry = ChatRegistry(tmp_path / "chats.json", 3.0, 5.0)
+    registry.seed(1)
+
+    registry.mark_proactive(1, "Bat tt hz men")
+
+    assert registry.already_sent(1, "Bat tt hz men?")
+    assert registry.already_sent(1, "bat tt hz men")
+    assert not registry.already_sent(1, "Bong tv na?")
+
+
+def test_no_grudge_text_after_she_brushed_him_off(tmp_path, retriever):
+    muffin = make_muffin(tmp_path, retriever)
+    chat = muffin.chats.setdefault(1, Chat())
+    chat.history = [
+        {"role": "user", "content": "Bart rvol nas jg mic"},
+        {"role": "assistant", "content": "Ort mic teh\nRvol tv jg"},
+    ]
+    muffin.mood.hurt(1, "ignored", 35)
+
+    parts = muffin.proactive(1)
+
+    assert parts[0] in {"Bong tv na?", "Hmm", "Hoy"}
+    assert parts[0] != "Bong ort reply oun"

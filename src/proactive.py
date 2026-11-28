@@ -13,7 +13,7 @@ import random
 import re
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +45,8 @@ class ChatState:
     last_kind: str = ""
     generic_day: str = ""
     generic_count: int = 0
+    sent_day: str = ""
+    sent_today: list[str] = field(default_factory=list)
 
 
 class ChatRegistry:
@@ -125,7 +127,27 @@ class ChatRegistry:
                 state.generic_count = 0
             if clean and GENERIC.match(clean):
                 state.generic_count += 1
+            if state.sent_day != today:
+                state.sent_day = today
+                state.sent_today = []
+            key = self._key(clean)
+            if key and key not in state.sent_today:
+                state.sent_today.append(key)
+                del state.sent_today[:-20]
             self._save()
+
+    @staticmethod
+    def _key(text: str) -> str:
+        """Compare messages without punctuation or spacing."""
+        return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+    def already_sent(self, chat_id: int, text: str) -> bool:
+        """True if this exact line (ignoring punctuation) went out today."""
+        with self.lock:
+            state = self.chats.get(str(chat_id), ChatState())
+            if state.sent_day != datetime.now().date().isoformat():
+                return False
+            return self._key(text) in state.sent_today
 
     def generic_count(self, chat_id: int) -> int:
         with self.lock:
@@ -262,13 +284,16 @@ class Proactive(threading.Thread):
             return
         parts = self.muffin.proactive(chat_id)
         if not parts:
-            parts = [self._fallback()]
-        if parts[0].strip() == self.registry.last_text(chat_id):
-            parts[0] = self._fallback_specific()
+            parts = [self._fallback(chat_id)]
+        if (
+            parts[0].strip() == self.registry.last_text(chat_id)
+            or self.registry.already_sent(chat_id, parts[0])
+        ):
+            parts[0] = self._fallback_specific(chat_id)
         if GENERIC.match(parts[0].strip()) and not self.registry.allow_generic(
             chat_id
         ):
-            parts[0] = self._fallback_specific()
+            parts[0] = self._fallback_specific(chat_id)
         log.info("proactive chat=%s -> %r", chat_id, " | ".join(parts))
         for i, part in enumerate(parts[:2]):
             if i:
@@ -293,15 +318,30 @@ class Proactive(threading.Thread):
             return NIGHT
         return DAY
 
-    def _fallback(self) -> str:
-        return random.choice(self._pool_for_hour(datetime.now().hour))
+    def _pick_fresh(self, chat_id: int, pool: list[str]) -> str:
+        """Prefer a line that has not gone out today."""
+        fresh = [
+            line
+            for line in pool
+            if not self.registry.already_sent(chat_id, line)
+            and line.strip() != self.registry.last_text(chat_id)
+        ]
+        return random.choice(fresh or pool or ["Bong tv na?"])
 
-    def _fallback_specific(self) -> str:
+    def _fallback(self, chat_id: int | None = None) -> str:
+        pool = self._pool_for_hour(datetime.now().hour)
+        if chat_id is not None:
+            return self._pick_fresh(chat_id, pool)
+        return random.choice(pool)
+
+    def _fallback_specific(self, chat_id: int | None = None) -> str:
         pool = [
             line
             for line in self._pool_for_hour(datetime.now().hour)
             if not GENERIC.match(line)
         ]
+        if chat_id is not None:
+            return self._pick_fresh(chat_id, pool)
         return random.choice(pool or ["Bong tv na?"])
 
     def _fallback_short(self) -> str:
