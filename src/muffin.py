@@ -484,6 +484,20 @@ PROFANE = re.compile(
     re.I,
 )
 
+# Mood-consistency guards: angry must not turn affectionate/romantic
+AFFECTIONATE = re.compile(
+    r"\b(love|miss|slnh|kiss|hug|cuddle|pamper|sweet|cutie|baby|dear|honey)\b",
+    re.I,
+)
+ROMANTIC = re.compile(
+    r"\b(kiss|make\s+out|hard\s+and\s+burning|passion|intimate|romantic)\b",
+    re.I,
+)
+COLD_WORDS = re.compile(
+    r"\b(ort|ot|hoy|bong\?|ignore|go\s+away|leave\s+me|fuck\s+off)\b",
+    re.I,
+)
+
 
 def too_long_for_chat(text: str, max_words: int = 12) -> bool:
     """A chat line this long is a drift, not a reply."""
@@ -1265,6 +1279,22 @@ class Muffin:
             return ["food"]
         return []
 
+    def mood_problems(self, mood: str, reply: str) -> list[str]:
+        """Catch a reply that contradicts the current mood."""
+        low = reply.lower()
+        problems: list[str] = []
+        # Angry/upset mood must not be affectionate or romantic
+        if mood in {"angry", "annoyed"}:
+            if AFFECTIONATE.search(low):
+                problems.append("mood:affectionate_while_angry")
+            if ROMANTIC.search(low):
+                problems.append("mood:romantic_while_angry")
+        # Soft mood must not be cold/hostile
+        if mood == "soft":
+            if COLD_WORDS.search(low):
+                problems.append("mood:cold_while_soft")
+        return problems
+
     def style_fix(self, parts: list[str], user_text: str = "") -> list[str]:
         fixed: list[str] = []
         for part in parts:
@@ -1830,6 +1860,31 @@ class Muffin:
             if rewritten and not self.relevance_problems(
                 text, "\n".join(rewritten)
             ):
+                parts = rewritten
+                self.apply_correction(chat_id, "\n".join(parts))
+            else:
+                parts = self.style_fix(parts, text)
+
+        # Mood consistency: angry must not turn affectionate/romantic
+        mood = self.mood.snapshot(chat_id)
+        mood_issues = self.mood_problems(mood.mood, "\n".join(parts))
+        if mood_issues:
+            self.last_style_issues.extend(mood_issues)
+            log.info("mood issue %s: %r", mood_issues, joined[:120])
+            try:
+                rewritten = self.rewrite_with_note(
+                    chat_id,
+                    text,
+                    f"You are {mood.mood}. Stay cold and short. Do not be affectionate, romantic, or warm.",
+                    start,
+                    joined,
+                    reset_metrics=False,
+                    timeout=5.0,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("mood rewrite failed: %s", exc)
+                rewritten = []
+            if rewritten and not self.mood_problems(mood.mood, "\n".join(rewritten)):
                 parts = rewritten
                 self.apply_correction(chat_id, "\n".join(parts))
             else:
