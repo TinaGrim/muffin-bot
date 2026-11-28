@@ -687,7 +687,7 @@ def test_fallback_chain_from_env():
         "LLM_MODEL": "gemini-4-argon",
         "LLM_API_KEY": "go-key",
         "FALLBACK_BASE_URL": "https://opencode.ai/inference/go/v1",
-        "FALLBACK_MODEL": "longcat-2.5-free",
+        "FALLBACK_MODEL": "longcat-2.5",
         "FALLBACK_API_KEY": "go-key",
         "FALLBACK2_BASE_URL": "https://openrouter.ai/api/v1",
         "FALLBACK2_MODEL": "openrouter/free",
@@ -699,17 +699,52 @@ def test_fallback_chain_from_env():
     # No OpenRouter key: that provider is skipped, the rest still works.
     config = load_config(dict(base), ROOT / "persona.md")
     assert [model for _base, _key, model in config.fallbacks] == [
-        "longcat-2.5-free",
+        "longcat-2.5",
         "qwen2.5:3b-instruct",
     ]
 
     with_key = dict(base, OPENROUTER_API_KEY="or-key")
     config = load_config(with_key, ROOT / "persona.md")
     assert [model for _base, _key, model in config.fallbacks] == [
-        "longcat-2.5-free",
+        "longcat-2.5",
         "openrouter/free",
         "qwen2.5:3b-instruct",
     ]
+
+
+def test_fallback_chain_expands_env_placeholders():
+    base = {
+        "LLM_BASE_URL": "https://opencode.ai/inference/go/v1",
+        "LLM_MODEL": "gemini-4-argon",
+        "LLM_API_KEY": "go-key",
+        "FALLBACK_BASE_URL": "https://openrouter.ai/api/v1",
+        "FALLBACK_MODEL": "openrouter/free",
+        "FALLBACK_API_KEY": "${OPENROUTER_API_KEY}",
+        "OPENROUTER_API_KEY": "",
+        "FALLBACK2_BASE_URL": "http://localhost:11434/v1",
+        "FALLBACK2_MODEL": "qwen2.5:3b-instruct",
+        "FALLBACK2_API_KEY": "${EMPTY_THEN_SET}",
+        "EMPTY_THEN_SET": "ollama",
+    }
+    # ${OPENROUTER_API_KEY} resolves to empty, so that provider is skipped
+    # instead of being sent a literal placeholder as its key.
+    config = load_config(dict(base), ROOT / "persona.md")
+    assert [model for _base, _key, model in config.fallbacks] == [
+        "qwen2.5:3b-instruct",
+    ]
+    assert config.fallbacks[0][1] == "ollama"
+
+
+def test_retry_after_seconds_reads_header():
+    from muffin import _retry_after_seconds
+
+    class Response:
+        def __init__(self, value: str):
+            self.headers = {"retry-after": value}
+
+    assert _retry_after_seconds(Response("120")) == 120.0
+    assert _retry_after_seconds(Response("")) is None
+    assert _retry_after_seconds(Response("not-a-number")) is None
 
 
 def test_retrieval_falls_back_when_embeddings_fail():

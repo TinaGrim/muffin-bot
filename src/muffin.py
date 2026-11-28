@@ -10,6 +10,7 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 import httpx
@@ -603,6 +604,24 @@ def split_messages(
     return [text]
 
 
+def _retry_after_seconds(response) -> float | None:
+    """Read a Retry-After header, either delay-seconds or an HTTP date."""
+    raw = (response.headers.get("retry-after") or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(float(raw), 1.0)
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    return max((when - datetime.now(when.tzinfo)).total_seconds(), 1.0)
+
+
 class LLM:
     def __init__(self, config: Config):
         self.config = config
@@ -661,7 +680,11 @@ class LLM:
                     "LLM HTTP %s: %s", exc.response.status_code, body
                 )
                 if exc.response.status_code == 429:
-                    self._cooldown_until = time.time() + 900
+                    # Respect the provider's reset hint, but cap it: a long
+                    # monthly-limit pause must still be re-checked hourly so the
+                    # bot recovers on its own when the quota comes back.
+                    cooldown = _retry_after_seconds(exc.response) or 900.0
+                    self._cooldown_until = time.time() + min(cooldown, 3600.0)
                     break
             except Exception as exc:  # noqa: BLE001 - report a useful message
                 last_error = exc
@@ -2417,7 +2440,31 @@ class Muffin:
         return split_messages(reply, text, mood.mood, generated=True)
 
 
+def _expand_env(env: dict[str, str]) -> dict[str, str]:
+    """Resolve ${NAME} placeholders that .env files leave literal.
+
+    python-dotenv does not expand them for us, so a line such as
+    ``FALLBACK3_API_KEY=${OPENROUTER_API_KEY}`` would otherwise be sent as a
+    bogus key instead of being dropped when the real variable is unset.
+    """
+    resolved = dict(env)
+    placeholder = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+    for _ in range(3):  # allow a couple of nested indirections
+        changed = False
+        for name, value in list(resolved.items()):
+            if "${" not in value:
+                continue
+            new = placeholder.sub(lambda m: resolved.get(m.group(1), ""), value)
+            if new != value:
+                resolved[name] = new
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
 def load_config(env: dict[str, str], persona_path: Path) -> Config:
+    env = _expand_env(env)
     fallbacks: list[tuple[str, str, str]] = []
     for prefix in ("FALLBACK", "FALLBACK2", "FALLBACK3", "FALLBACK4"):
         base = env.get(f"{prefix}_BASE_URL", "").strip()
